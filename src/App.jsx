@@ -6,7 +6,6 @@ import { doc, setDoc, getDoc, collection, query, getDocs, where, serverTimestamp
 const CRIC_KEYS = ["c3c5ad69-4ca5-44b0-8313-1fc4362ed806", "eb4fcb6b-a26b-4594-9893-28412197c556", "64dcc6e7-c783-414b-9047-6abb463edec0", "d009046b-65c7-4ff3-abad-3e0a7f0574ca"];
 const IPL_SERIES_ID = "87c62aac-bc3c-4738-ab93-19da0690488f";
 const ADMIN_EMAIL = "dhavalranavasiya@gmail.com";
-const PULL = 20;
 
 function App() {
   const [user, setUser] = useState(null);
@@ -17,6 +16,7 @@ function App() {
   const [allPicks, setAllPicks] = useState([]);
   const [leaderboard, setLeaderboard] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [adminPull, setAdminPull] = useState(20); // Dynamic Pull per match
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
@@ -74,8 +74,8 @@ function App() {
           const sc = data.data.scorecard;
           const t1Name = sc[0]?.inning || "Team 1";
           const t2Name = sc[1]?.inning || "Team 2";
-          const parse = (inn, teamFullName) => (inn?.batting || []).slice(0, 9).map((b, i) => ({ 
-            pos: i + 1, team: teamFullName, name: b.batsman?.name || b.name || "Not Played", runs: b.r || 0 
+          const parse = (inn, team) => (inn?.batting || []).slice(0, 9).map((b, i) => ({ 
+            pos: i + 1, team, name: b.batsman?.name || b.name || "Not Played", runs: b.r || 0 
           }));
           const scores = { inn1: parse(sc[0], t1Name), inn2: parse(sc[1], t2Name), updatedAt: new Date() };
           await setDoc(doc(db, "active_matches", selectedMatch.id), { scores }, { merge: true });
@@ -101,12 +101,13 @@ function App() {
       };
     }).sort((a,b) => b.total - a.total);
 
-    const pot = allPicks.length * PULL;
-    const remPot = pot - PULL; // After 3rd place receives pull back
+    // Dynamic Math based on player count
+    const totalPlayers = allPicks.length;
+    const pot = totalPlayers * adminPull;
+    const remPot = pot - adminPull; 
     const p1Amt = Math.round(remPot * 0.6);
     const p2Amt = Math.round(remPot * 0.4);
 
-    // Split-Pot Logic for Ties
     let rank = 0;
     while (rank < results.length) {
       let tieGroup = results.filter(r => r.total === results[rank].total);
@@ -114,17 +115,17 @@ function App() {
       let startPos = rank;
       
       tieGroup.forEach(r => {
-        if (startPos === 0) { // 1st Place Tie
-          if (count === 1) r.net = p1Amt - PULL;
-          else if (count === 2) r.net = Math.round((p1Amt + p2Amt) / 2) - PULL;
-          else r.net = Math.round((p1Amt + p2Amt + PULL) / count) - PULL;
-        } else if (startPos === 1) { // 2nd Place Tie
-          if (count === 1) r.net = p2Amt - PULL;
-          else r.net = Math.round((p2Amt + PULL) / count) - PULL;
-        } else if (startPos === 2) { // 3rd Place Tie
-          r.net = count === 1 ? 0 : -PULL; // Only one 3rd place gets pull back
+        if (startPos === 0) { // 1st Place logic
+          if (count === 1) r.net = p1Amt - adminPull;
+          else if (count === 2) r.net = Math.round((p1Amt + p2Amt) / 2) - adminPull;
+          else r.net = Math.round((p1Amt + p2Amt + adminPull) / count) - adminPull;
+        } else if (startPos === 1) { // 2nd Place logic
+          if (count === 1) r.net = p2Amt - adminPull;
+          else r.net = Math.round((p2Amt + adminPull) / count) - adminPull;
+        } else if (startPos === 2) { // 3rd Place gets back pull
+          r.net = count === 1 ? 0 : -adminPull;
         } else {
-          r.net = -PULL;
+          r.net = -adminPull;
         }
       });
       rank += count;
@@ -134,20 +135,15 @@ function App() {
 
   const finalRankings = calculateFinalPoints();
 
-  // ADMIN: Submit results to Season Leaderboard
   const submitToSeason = async () => {
     if (user.email !== ADMIN_EMAIL || !selectedMatch?.scores) return;
-    if (!window.confirm("Submit these results to the Season Leaderboard?")) return;
+    if (!window.confirm(`Submit results to Season with Pull: ${adminPull}?`)) return;
 
     for (let r of finalRankings) {
-      const userRef = doc(db, "users", r.userId);
-      await setDoc(userRef, { 
-        name: r.userName, 
-        totalPoints: increment(r.net) 
-      }, { merge: true });
+      await setDoc(doc(db, "users", r.userId), { name: r.userName, totalPoints: increment(r.net) }, { merge: true });
     }
-    await setDoc(doc(db, "active_matches", selectedMatch.id), { settled: true }, { merge: true });
-    alert("Season Points Updated!");
+    await setDoc(doc(db, "active_matches", selectedMatch.id), { settled: true, finalPull: adminPull }, { merge: true });
+    alert("Season Updated!");
     loadLeaderboard();
   };
 
@@ -160,6 +156,7 @@ function App() {
       setMatchDeck(deck);
     } else {
       setMatchDeck(snap.data());
+      if (snap.data().finalPull) setAdminPull(snap.data().finalPull);
     }
     setSelectedMatch({ ...m, ...snap.data() });
     setTab('play');
@@ -220,9 +217,14 @@ function App() {
           {tab === 'results' && selectedMatch && (
             <section>
               {user.email === ADMIN_EMAIL && (
-                <div style={{display:'flex', gap:'5px'}}>
-                  <button onClick={adminFetchScorecard} style={styles.btnAdmin}>Fetch Scorecard (API)</button>
-                  <button onClick={submitToSeason} style={{...styles.btnAdmin, background:'#1fd18a'}}>Final Submit to Season</button>
+                <div style={styles.adminPanel}>
+                  <div style={{display:'flex', gap:'10px', alignItems:'center', marginBottom:'10px'}}>
+                    <label style={{fontSize:'12px'}}>Set Pull Amount:</label>
+                    <input type="number" value={adminPull} onChange={(e) => setAdminPull(parseInt(e.target.value) || 0)} style={styles.adminInput}/>
+                    <button onClick={adminFetchScorecard} style={styles.btnAction}>Fetch Scorecard</button>
+                    <button onClick={submitToSeason} style={{...styles.btnAction, background:'#1fd18a'}}>Final Submit</button>
+                  </div>
+                  <div style={{fontSize:'11px', color:'#f0c040'}}>Pot: {allPicks.length} players × {adminPull} = {allPicks.length * adminPull} pts</div>
                 </div>
               )}
               
@@ -250,9 +252,9 @@ function App() {
                 {finalRankings.map((p, i) => (
                   <div key={i} style={styles.tableRow}>
                     <div style={styles.colF}>{p.userName.split(' ')[0]}</div>
-                    <div style={styles.colInn}><span style={{color:'#1fd18a'}}>#{p.inn1Num}</span> {p.p1Name}</div>
+                    <div style={styles.colInn}><span style={{color:'#1fd18a', fontWeight:'bold'}}>#{p.inn1Num}</span> {p.p1Name}</div>
                     <div style={styles.colR}>{p.r1}</div>
-                    <div style={styles.colInn}><span style={{color:'#ff3d5a'}}>#{p.inn2Num}</span> {p.p2Name}</div>
+                    <div style={styles.colInn}><span style={{color:'#ff3d5a', fontWeight:'bold'}}>#{p.inn2Num}</span> {p.p2Name}</div>
                     <div style={styles.colR}>{p.r2}</div>
                     <div style={{...styles.colTot, color:'#f0c040'}}>{p.total}</div>
                     <div style={{...styles.colNet, color: p.net > 0 ? '#1fd18a' : p.net === 0 ? '#777' : '#ff3d5a'}}>{p.net > 0 ? '+' : ''}{p.net}</div>
@@ -300,7 +302,10 @@ const styles = {
   grid: { display: 'grid', gridTemplateColumns: 'repeat(9, 1fr)', gap: '3px' },
   cardSmall: { height: '35px', display: 'flex', justifyContent: 'center', alignItems: 'center', borderRadius: '2px', border: '1px solid #333', fontSize: '9px' },
   btnPrimary: { background: '#ff5f1f', color: 'white', padding: '12px 25px', border: 'none', borderRadius: '4px' },
-  btnAdmin: { flex:1, background: '#f0c040', color: '#000', padding: '8px', border: 'none', borderRadius: '4px', fontWeight: 'bold', marginBottom: '10px' },
+  btnAdmin: { width: '100%', background: '#f0c040', color: '#000', padding: '8px', border: 'none', borderRadius: '4px', fontWeight: 'bold', marginBottom: '10px' },
+  adminPanel: { background:'#13141f', padding:'10px', borderRadius:'8px', border:'1px solid #f0c040', marginBottom:'15px' },
+  adminInput: { background:'#000', color:'#fff', border:'1px solid #444', width:'60px', padding:'5px', borderRadius:'4px' },
+  btnAction: { background:'#f0c040', color:'#000', padding:'5px 12px', border:'none', borderRadius:'4px', fontWeight:'bold', cursor:'pointer' },
   podiumContainer: { display: 'flex', justifyContent: 'center', alignItems: 'flex-end', gap: '8px', margin: '15px 0', height: '170px' },
   pod: { flex: 1, background: '#13141f', border: '1px solid #252638', borderRadius: '8px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '5px' },
   podMedal: { fontSize: '20px' },
@@ -310,11 +315,10 @@ const styles = {
   tableHeader: { display: 'flex', background: '#1a1b28', padding: '8px 5px', fontSize: '9px', color: '#52536e' },
   tableRow: { display: 'flex', padding: '10px 5px', fontSize: '11px', borderBottom: '1px solid #252638', alignItems: 'center' },
   colF: { flex: 1.5, fontWeight: 'bold' },
-  colInn: { flex: 3, fontSize: '10px' },
+  colInn: { flex: 3.5, fontSize: '10px' },
   colR: { flex: 1, textAlign: 'center' },
   colTot: { flex: 1, textAlign: 'center', fontWeight: 'bold' },
-  colNet: { flex: 1, textAlign: 'center', fontWeight: 'bold' },
-  friendRow: { display: 'flex', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid #222' }
+  colNet: { flex: 1, textAlign: 'center', fontWeight: 'bold' }
 };
 
 export default App;
