@@ -6,6 +6,7 @@ import { doc, setDoc, getDoc, collection, query, getDocs, where, serverTimestamp
 const CRIC_KEYS = ["c3c5ad69-4ca5-44b0-8313-1fc4362ed806", "eb4fcb6b-a26b-4594-9893-28412197c556", "64dcc6e7-c783-414b-9047-6abb463edec0", "d009046b-65c7-4ff3-abad-3e0a7f0574ca"];
 const IPL_SERIES_ID = "87c62aac-bc3c-4738-ab93-19da0690488f";
 const ADMIN_EMAIL = "dhavalranavasiya@gmail.com";
+const PULL = 20;
 
 function App() {
   const [user, setUser] = useState(null);
@@ -71,30 +72,17 @@ function App() {
         const data = await res.json();
         if (data.status === 'success' && data.data.scorecard) {
           const sc = data.data.scorecard;
-          
-          // STRICT TEAM MAPPING
-          // Using exact "inning" string from the API as the team name
           const t1Name = sc[0]?.inning || "Team 1";
           const t2Name = sc[1]?.inning || "Team 2";
 
-          const parse = (inn, teamFullName) => {
-            return (inn?.batting || []).slice(0, 9).map((b, i) => ({ 
-              pos: i + 1, 
-              team: teamFullName, 
-              name: b.batsman?.name || b.name || "Not Played", 
-              runs: b.r || 0 
-            }));
-          };
+          const parse = (inn, teamFullName) => (inn?.batting || []).slice(0, 9).map((b, i) => ({ 
+            pos: i + 1, team: teamFullName, name: b.batsman?.name || b.name || "Not Played", runs: b.r || 0 
+          }));
 
-          const scores = { 
-            inn1: parse(sc[0], t1Name), 
-            inn2: parse(sc[1], t2Name), 
-            updatedAt: new Date() 
-          };
-          
+          const scores = { inn1: parse(sc[0], t1Name), inn2: parse(sc[1], t2Name), updatedAt: new Date() };
           await setDoc(doc(db, "active_matches", selectedMatch.id), { scores }, { merge: true });
           setSelectedMatch({ ...selectedMatch, scores });
-          alert("Scorecard Fetched: Teams Mapped Strictly");
+          alert("Scorecard Fetched");
           return;
         }
       } catch (e) { console.error(e); }
@@ -125,7 +113,32 @@ function App() {
     }, { merge: true });
   };
 
-  if (loading) return <div style={styles.center}>Loading IST...</div>;
+  const calculateFinalPoints = () => {
+    if (!selectedMatch?.scores || allPicks.length === 0) return [];
+
+    let results = allPicks.map(p => {
+      const s1 = selectedMatch.scores.inn1.find(s => s.pos === p.inn1Num);
+      const s2 = selectedMatch.scores.inn2.find(s => s.pos === p.inn2Num);
+      return { ...p, r1: s1?.runs || 0, r2: s2?.runs || 0, total: (s1?.runs || 0) + (s2?.runs || 0) };
+    }).sort((a,b) => b.total - a.total);
+
+    const pot = allPicks.length * PULL;
+    const remainingPot = pot - PULL; // After 3rd place gets pull back
+
+    // Ranking and Split Pot Logic
+    results.forEach((r, i) => {
+      if (i === 0) r.net = Math.round(remainingPot * 0.6) - PULL;
+      else if (i === 1) r.net = Math.round(remainingPot * 0.4) - PULL;
+      else if (i === 2) r.net = 0;
+      else r.net = -PULL;
+    });
+
+    return results;
+  };
+
+  const finalRankings = calculateFinalPoints();
+
+  if (loading) return <div style={styles.center}>Loading...</div>;
 
   return (
     <div style={styles.container}>
@@ -136,7 +149,7 @@ function App() {
           <nav style={styles.tabs}>
             <button onClick={() => setTab('matches')} style={tab === 'matches' ? styles.tabOn : styles.tabOff}>Matches</button>
             <button onClick={() => setTab('play')} style={tab === 'play' ? styles.tabOn : styles.tabOff} disabled={!selectedMatch}>Play</button>
-            <button onClick={() => setTab('my-satto')} style={tab === 'my-satto' ? styles.tabOn : styles.tabOff} disabled={!selectedMatch}>My Satto</button>
+            <button onClick={() => setTab('my-satto')} style={tab === 'my-satto' ? styles.tabOn : styles.tabOff} disabled={!selectedMatch}>Results</button>
             <button onClick={() => setTab('season')} style={tab === 'season' ? styles.tabOn : styles.tabOff}>Season</button>
           </nav>
 
@@ -155,13 +168,13 @@ function App() {
               <div style={styles.grid}>
                 {[...Array(9)].map((_, i) => {
                   const p = allPicks.find(x => x.inn1Card === i);
-                  return <div key={i} onClick={() => !p && lockCard(1, i)} style={{...styles.cardBox, background: p?.userId === user.uid ? '#1fd18a' : p ? '#333' : '#13141f'}}>{p?.userId === user.uid ? `#${p.inn1Num}` : p ? "✖" : "🟢"}</div>
+                  return <div key={i} onClick={() => !p && lockCard(1, i)} style={{...styles.cardSmall, background: p?.userId === user.uid ? '#1fd18a' : p ? '#333' : '#13141f'}}>{p?.userId === user.uid ? `#${p.inn1Num}` : p ? "✖" : "🟢"}</div>
                 })}
               </div>
               <div style={{...styles.grid, marginTop:'10px'}}>
                 {[...Array(9)].map((_, i) => {
                   const p = allPicks.find(x => x.inn2Card === i);
-                  return <div key={i} onClick={() => !p && lockCard(2, i)} style={{...styles.cardBox, background: p?.userId === user.uid ? '#ff3d5a' : p ? '#333' : '#13141f'}}>{p?.userId === user.uid ? `#${p.inn2Num}` : p ? "✖" : "🔴"}</div>
+                  return <div key={i} onClick={() => !p && lockCard(2, i)} style={{...styles.cardSmall, background: p?.userId === user.uid ? '#ff3d5a' : p ? '#333' : '#13141f'}}>{p?.userId === user.uid ? `#${p.inn2Num}` : p ? "✖" : "🔴"}</div>
                 })}
               </div>
             </section>
@@ -169,41 +182,42 @@ function App() {
 
           {tab === 'my-satto' && selectedMatch && (
             <section>
-              {user.email === ADMIN_EMAIL && <button onClick={adminFetchScorecard} style={styles.btnAdmin}>Fetch Scorecard (Strict Team Sync)</button>}
+              {user.email === ADMIN_EMAIL && <button onClick={adminFetchScorecard} style={styles.btnAdmin}>Fetch Scorecard (API)</button>}
+              
+              {/* WINNERS PODIUM */}
+              <div style={styles.podiumContainer}>
+                {finalRankings.slice(0, 3).map((r, i) => (
+                  <div key={i} style={{...styles.pod, order: i === 0 ? 2 : i === 1 ? 1 : 3, height: i === 0 ? '160px' : '140px'}}>
+                    <div style={styles.podMedal}>{i === 0 ? '🥇' : i === 1 ? '🥈' : '🥉'}</div>
+                    <div style={styles.podName}>{r.userName.split(' ')[0]}</div>
+                    <div style={styles.podScore}>{r.total}</div>
+                    <div style={{color: r.net >= 0 ? '#1fd18a' : '#ff3d5a', fontSize: '12px'}}>{r.net > 0 ? '+' : ''}{r.net} pts</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* DETAILED SCORE TABLE */}
               <div style={styles.table}>
                 <div style={styles.tableHeader}>
-                  <div style={styles.colF}>Friend</div>
-                  <div style={styles.colT}>Team</div>
-                  <div style={styles.colN}>NO.</div>
-                  <div style={styles.colP}>Player</div>
-                  <div style={styles.colR}>Run</div>
-                  <div style={styles.colTot}>Total</div>
+                  <div style={styles.colF}>FRIEND</div>
+                  <div style={styles.colN}>INN1</div>
+                  <div style={styles.colR}>RUNS</div>
+                  <div style={styles.colN}>INN2</div>
+                  <div style={styles.colR}>RUNS</div>
+                  <div style={styles.colTot}>TOTAL</div>
+                  <div style={styles.colNet}>NET PTS</div>
                 </div>
-                {allPicks.map(p => {
-                  const s1 = selectedMatch.scores?.inn1?.find(s => s.pos === p.inn1Num);
-                  const s2 = selectedMatch.scores?.inn2?.find(s => s.pos === p.inn2Num);
-                  const total = (s1?.runs || 0) + (s2?.runs || 0);
-                  return (
-                    <div key={p.userId} style={styles.tableRowGroup}>
-                      <div style={styles.colF}>{p.userName.split(' ')[0]}</div>
-                      <div style={styles.multiRowCol}>
-                        <div style={styles.subRow}>
-                          <div style={styles.colT}>{s1?.team || '-'}</div>
-                          <div style={styles.colN}>{p.inn1Num}</div>
-                          <div style={styles.colP}>{s1?.name || 'Not Played'}</div>
-                          <div style={styles.colR}>{s1?.runs || 0}</div>
-                        </div>
-                        <div style={styles.subRow}>
-                          <div style={styles.colT}>{s2?.team || '-'}</div>
-                          <div style={styles.colN}>{p.inn2Num}</div>
-                          <div style={styles.colP}>{s2?.name || 'Not Played'}</div>
-                          <div style={styles.colR}>{s2?.runs || 0}</div>
-                        </div>
-                      </div>
-                      <div style={styles.colTot}><b>{total}</b></div>
-                    </div>
-                  );
-                })}
+                {finalRankings.map((p, i) => (
+                  <div key={i} style={styles.tableRow}>
+                    <div style={styles.colF}>{p.userName.split(' ')[0]}</div>
+                    <div style={{...styles.colN, color:'#1fd18a'}}>#{p.inn1Num}</div>
+                    <div style={styles.colR}>{p.r1}</div>
+                    <div style={{...styles.colN, color:'#ff3d5a'}}>#{p.inn2Num}</div>
+                    <div style={styles.colR}>{p.r2}</div>
+                    <div style={{...styles.colTot, color:'#f0c040'}}><b>{p.total}</b></div>
+                    <div style={{...styles.colNet, color: p.net > 0 ? '#1fd18a' : p.net === 0 ? '#777' : '#ff3d5a'}}>{p.net > 0 ? '+' : ''}{p.net}</div>
+                  </div>
+                ))}
               </div>
             </section>
           )}
@@ -226,20 +240,22 @@ const styles = {
   tabOff: { flex: 1, padding: '10px', background: '#13141f', border: 'none', color: '#777' },
   matchCard: { background: '#13141f', padding: '12px', margin: '5px 0', borderRadius: '4px', border: '1px solid #252638' },
   grid: { display: 'grid', gridTemplateColumns: 'repeat(9, 1fr)', gap: '3px' },
-  cardBox: { height: '35px', display: 'flex', justifyContent: 'center', alignItems: 'center', borderRadius: '2px', border: '1px solid #333', fontSize: '10px' },
+  cardSmall: { height: '35px', display: 'flex', justifyContent: 'center', alignItems: 'center', borderRadius: '2px', border: '1px solid #333', fontSize: '10px' },
   btnPrimary: { background: '#ff5f1f', color: 'white', padding: '12px 25px', border: 'none', borderRadius: '4px' },
   btnAdmin: { width: '100%', background: '#f0c040', color: '#000', padding: '8px', border: 'none', borderRadius: '4px', fontWeight: 'bold', marginBottom: '10px' },
-  table: { border: '1px solid #000', background: '#fff', color: '#000', fontSize: '9px' },
-  tableHeader: { display: 'flex', background: '#000', color: '#fff', fontWeight: 'bold', textAlign: 'center', padding: '4px 0' },
-  tableRowGroup: { display: 'flex', borderBottom: '1px solid #000', alignItems: 'stretch' },
-  multiRowCol: { flex: 1, display: 'flex', flexDirection: 'column', borderLeft: '1px solid #000', borderRight: '1px solid #000' },
-  subRow: { display: 'flex', borderBottom: '1px solid #000' },
-  colF: { width: '35px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', borderRight: '1px solid #000', background: '#f9f9f9' },
-  colT: { width: '55px', borderRight: '1px solid #000', textAlign: 'center', padding: '3px 0', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' },
-  colN: { width: '25px', borderRight: '1px solid #000', textAlign: 'center', padding: '3px 0' },
-  colP: { flex: 1, borderRight: '1px solid #000', padding: '3px 5px', overflow: 'hidden', whiteSpace: 'nowrap' },
-  colR: { width: '25px', textAlign: 'center', padding: '3px 0' },
-  colTot: { width: '35px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px', background: '#f9f9f9' },
+  podiumContainer: { display: 'flex', justifyContent: 'center', alignItems: 'flex-end', gap: '10px', margin: '20px 0', height: '180px' },
+  pod: { flex: 1, background: '#13141f', border: '1px solid #252638', borderRadius: '8px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '10px' },
+  podMedal: { fontSize: '24px', marginBottom: '5px' },
+  podName: { fontWeight: 'bold', fontSize: '14px' },
+  podScore: { fontSize: '28px', color: '#f0c040', margin: '5px 0' },
+  table: { background: '#13141f', borderRadius: '8px', overflow: 'hidden', marginTop: '20px' },
+  tableHeader: { display: 'flex', background: '#1a1b28', padding: '10px 5px', fontSize: '10px', color: '#52536e', borderBottom: '1px solid #252638' },
+  tableRow: { display: 'flex', padding: '12px 5px', fontSize: '12px', borderBottom: '1px solid #252638' },
+  colF: { flex: 2, fontWeight: 'bold' },
+  colN: { flex: 1, textAlign: 'center' },
+  colR: { flex: 1, textAlign: 'center' },
+  colTot: { flex: 1, textAlign: 'center' },
+  colNet: { flex: 1, textAlign: 'center', fontWeight: 'bold' },
   friendRow: { display: 'flex', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid #222' }
 };
 
