@@ -119,13 +119,19 @@ function App() {
     let results = allPicks.map(p => {
       const s1 = selectedMatch.scores.inn1.find(s => s.pos === p.inn1Num);
       const s2 = selectedMatch.scores.inn2.find(s => s.pos === p.inn2Num);
-      return { ...p, r1: s1?.runs || 0, r2: s2?.runs || 0, total: (s1?.runs || 0) + (s2?.runs || 0) };
+      return { 
+        ...p, 
+        p1Name: s1?.name || "TBD",
+        p2Name: s2?.name || "TBD",
+        r1: s1?.runs || 0, 
+        r2: s2?.runs || 0, 
+        total: (s1?.runs || 0) + (s2?.runs || 0) 
+      };
     }).sort((a,b) => b.total - a.total);
 
     const pot = allPicks.length * PULL;
-    const remainingPot = pot - PULL; // After 3rd place gets pull back
+    const remainingPot = pot - PULL;
 
-    // Ranking and Split Pot Logic
     results.forEach((r, i) => {
       if (i === 0) r.net = Math.round(remainingPot * 0.6) - PULL;
       else if (i === 1) r.net = Math.round(remainingPot * 0.4) - PULL;
@@ -184,7 +190,6 @@ function App() {
             <section>
               {user.email === ADMIN_EMAIL && <button onClick={adminFetchScorecard} style={styles.btnAdmin}>Fetch Scorecard (API)</button>}
               
-              {/* WINNERS PODIUM */}
               <div style={styles.podiumContainer}>
                 {finalRankings.slice(0, 3).map((r, i) => (
                   <div key={i} style={{...styles.pod, order: i === 0 ? 2 : i === 1 ? 1 : 3, height: i === 0 ? '160px' : '140px'}}>
@@ -196,13 +201,12 @@ function App() {
                 ))}
               </div>
 
-              {/* DETAILED SCORE TABLE */}
               <div style={styles.table}>
                 <div style={styles.tableHeader}>
                   <div style={styles.colF}>FRIEND</div>
-                  <div style={styles.colN}>INN1</div>
+                  <div style={styles.colInn}>{selectedMatch.scores?.inn1?.[0]?.team || "TEAM 1"}</div>
                   <div style={styles.colR}>RUNS</div>
-                  <div style={styles.colN}>INN2</div>
+                  <div style={styles.colInn}>{selectedMatch.scores?.inn2?.[0]?.team || "TEAM 2"}</div>
                   <div style={styles.colR}>RUNS</div>
                   <div style={styles.colTot}>TOTAL</div>
                   <div style={styles.colNet}>NET PTS</div>
@@ -210,9 +214,15 @@ function App() {
                 {finalRankings.map((p, i) => (
                   <div key={i} style={styles.tableRow}>
                     <div style={styles.colF}>{p.userName.split(' ')[0]}</div>
-                    <div style={{...styles.colN, color:'#1fd18a'}}>#{p.inn1Num}</div>
+                    <div style={styles.colInn}>
+                        <span style={{color:'#1fd18a', fontWeight:'bold'}}>#{p.inn1Num}</span> 
+                        <span style={{marginLeft:'5px', color:'#7a7b98'}}>{p.p1Name}</span>
+                    </div>
                     <div style={styles.colR}>{p.r1}</div>
-                    <div style={{...styles.colN, color:'#ff3d5a'}}>#{p.inn2Num}</div>
+                    <div style={styles.colInn}>
+                        <span style={{color:'#ff3d5a', fontWeight:'bold'}}>#{p.inn2Num}</span> 
+                        <span style={{marginLeft:'5px', color:'#7a7b98'}}>{p.p2Name}</span>
+                    </div>
                     <div style={styles.colR}>{p.r2}</div>
                     <div style={{...styles.colTot, color:'#f0c040'}}><b>{p.total}</b></div>
                     <div style={{...styles.colNet, color: p.net > 0 ? '#1fd18a' : p.net === 0 ? '#777' : '#ff3d5a'}}>{p.net > 0 ? '+' : ''}{p.net}</div>
@@ -250,9 +260,9 @@ const styles = {
   podScore: { fontSize: '28px', color: '#f0c040', margin: '5px 0' },
   table: { background: '#13141f', borderRadius: '8px', overflow: 'hidden', marginTop: '20px' },
   tableHeader: { display: 'flex', background: '#1a1b28', padding: '10px 5px', fontSize: '10px', color: '#52536e', borderBottom: '1px solid #252638' },
-  tableRow: { display: 'flex', padding: '12px 5px', fontSize: '12px', borderBottom: '1px solid #252638' },
-  colF: { flex: 2, fontWeight: 'bold' },
-  colN: { flex: 1, textAlign: 'center' },
+  tableRow: { display: 'flex', padding: '12px 5px', fontSize: '12px', borderBottom: '1px solid #252638', alignItems: 'center' },
+  colF: { flex: 1.5, fontWeight: 'bold' },
+  colInn: { flex: 3, fontSize: '11px' },
   colR: { flex: 1, textAlign: 'center' },
   colTot: { flex: 1, textAlign: 'center' },
   colNet: { flex: 1, textAlign: 'center', fontWeight: 'bold' },
