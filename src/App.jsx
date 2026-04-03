@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { auth, db, loginWithGoogle, logout } from './firebase';
 import { onAuthStateChanged } from 'firebase/auth';
-import { doc, setDoc, getDoc, collection, query, getDocs, where, serverTimestamp, onSnapshot, increment } from 'firebase/firestore';
+import { doc, setDoc, getDoc, collection, query, getDocs, where, serverTimestamp, onSnapshot, increment, writeBatch } from 'firebase/firestore';
 
 const CRIC_KEYS = ["c3c5ad69-4ca5-44b0-8313-1fc4362ed806", "eb4fcb6b-a26b-4594-9893-28412197c556", "64dcc6e7-c783-414b-9047-6abb463edec0", "d009046b-65c7-4ff3-abad-3e0a7f0574ca"];
 const IPL_SERIES_ID = "87c62aac-bc3c-4738-ab93-19da0690488f";
@@ -66,7 +66,7 @@ function App() {
   };
 
   const adminFetchScorecard = async () => {
-    if (user.email !== ADMIN_EMAIL) return;
+    if (user.email !== ADMIN_EMAIL || selectedMatch?.settled) return;
     for (let key of CRIC_KEYS) {
       try {
         const res = await fetch(`https://api.cricapi.com/v1/match_scorecard?apikey=${key}&id=${selectedMatch.id}`);
@@ -129,14 +129,37 @@ function App() {
   const finalRankings = calculateFinalPoints();
 
   const submitToSeason = async () => {
-    if (user.email !== ADMIN_EMAIL || !selectedMatch?.scores) return;
-    if (!window.confirm(`Submit results with Pull: ${adminPull}?`)) return;
+    if (user.email !== ADMIN_EMAIL || !selectedMatch?.scores || selectedMatch?.settled) return;
+    if (!window.confirm(`Submit results? Match will be LOCKED after this.`)) return;
     for (let r of finalRankings) {
       await setDoc(doc(db, "users", r.userId), { name: r.userName, totalPoints: increment(r.net) }, { merge: true });
     }
     await setDoc(doc(db, "active_matches", selectedMatch.id), { settled: true, finalPull: adminPull }, { merge: true });
-    alert("Season Updated!");
+    setSelectedMatch(prev => ({...prev, settled: true}));
+    alert("Season Updated & Match Locked!");
     loadLeaderboard();
+  };
+
+  // NUCLEAR RESET: Admin only
+  const nuclearReset = async () => {
+    if (user.email !== ADMIN_EMAIL) return;
+    if (!window.confirm("☢️ NUCLEAR RESET: This will delete ALL match data, picks, and the leaderboard. Are you 100% sure?")) return;
+
+    const collectionsToDelete = ['match_picks', 'active_matches', 'users'];
+    
+    try {
+      for (const colName of collectionsToDelete) {
+        const querySnapshot = await getDocs(collection(db, colName));
+        const batch = writeBatch(db);
+        querySnapshot.forEach((doc) => batch.delete(doc.ref));
+        await batch.commit();
+      }
+      alert("✅ Database Wiped. Starting Fresh!");
+      window.location.reload();
+    } catch (e) {
+      console.error(e);
+      alert("Error wiping database. Check Firebase Console.");
+    }
   };
 
   const handleSelectMatch = async (m) => {
@@ -146,15 +169,18 @@ function App() {
       const deck = { inn1Deck: [1,2,3,4,5,6,7,8,9].sort(() => Math.random()-0.5), inn2Deck: [1,2,3,4,5,6,7,8,9].sort(() => Math.random()-0.5) };
       await setDoc(matchRef, deck);
       setMatchDeck(deck);
+      setSelectedMatch({ ...m, ...deck });
     } else {
-      setMatchDeck(snap.data());
-      if (snap.data().finalPull) setAdminPull(snap.data().finalPull);
+      const data = snap.data();
+      setMatchDeck(data);
+      if (data.finalPull) setAdminPull(data.finalPull);
+      setSelectedMatch({ ...m, ...data });
     }
-    setSelectedMatch({ ...m, ...snap.data() });
     setTab('play');
   };
 
   const lockCard = async (inn, idx) => {
+    if (selectedMatch?.settled) return alert("This match is already finished.");
     const effectiveUID = testName ? `test_${testName.replace(/\s/g, '_')}` : user.uid;
     const effectiveName = testName || user.displayName;
     const myExisting = allPicks.find(p => p.userId === effectiveUID);
@@ -168,7 +194,7 @@ function App() {
     }, { merge: true });
   };
 
-  if (loading) return <div style={styles.center}>Loading...</div>;
+  if (loading) return <div style={styles.center}>Loading IST...</div>;
 
   return (
     <div style={styles.container}>
@@ -194,7 +220,7 @@ function App() {
 
           {tab === 'play' && selectedMatch && (
             <section>
-              {user.email === ADMIN_EMAIL && (
+              {user.email === ADMIN_EMAIL && !selectedMatch.settled && (
                 <div style={styles.testPanel}>
                   <span style={{fontSize:'11px', color:'#f0c040'}}>🧪 TEST MODE: Pick as:</span>
                   <input placeholder="Friend Name" value={testName} onChange={e => setTestName(e.target.value)} style={styles.testInput}/>
@@ -203,6 +229,7 @@ function App() {
               )}
 
               <h3 style={{marginBottom:'15px', fontSize:'14px'}}>{selectedMatch.name}</h3>
+              {selectedMatch.settled && <div style={styles.lockBadge}>🔒 Match Locked & Settled</div>}
               
               <div style={styles.grid}>
                 {[...Array(9)].map((_, i) => {
@@ -244,12 +271,16 @@ function App() {
             <section>
               {user.email === ADMIN_EMAIL && (
                 <div style={styles.adminPanel}>
-                  <div style={{display:'flex', gap:'10px', alignItems:'center', marginBottom:'10px'}}>
-                    <label style={{fontSize:'12px'}}>Pull:</label>
-                    <input type="number" value={adminPull} onChange={(e) => setAdminPull(parseInt(e.target.value) || 0)} style={styles.adminInput}/>
-                    <button onClick={adminFetchScorecard} style={styles.btnAction}>Fetch Scorecard</button>
-                    <button onClick={submitToSeason} style={{...styles.btnAction, background:'#1fd18a'}}>Final Submit</button>
-                  </div>
+                  {selectedMatch.settled ? (
+                    <div style={{color:'#1fd18a', fontWeight:'bold', textAlign:'center'}}>✅ POINTS SUBMITTED TO SEASON</div>
+                  ) : (
+                    <div style={{display:'flex', gap:'10px', alignItems:'center'}}>
+                      <label style={{fontSize:'12px'}}>Pull:</label>
+                      <input type="number" value={adminPull} onChange={(e) => setAdminPull(parseInt(e.target.value) || 0)} style={styles.adminInput}/>
+                      <button onClick={adminFetchScorecard} style={styles.btnAction}>Fetch Scorecard</button>
+                      <button onClick={submitToSeason} style={{...styles.btnAction, background:'#1fd18a'}}>Final Submit</button>
+                    </div>
+                  )}
                 </div>
               )}
               
@@ -291,7 +322,10 @@ function App() {
 
           {tab === 'season' && (
             <section>
-              <h3>Season Leaderboard</h3>
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'15px'}}>
+                <h3 style={{margin:0}}>Season Leaderboard</h3>
+                {user.email === ADMIN_EMAIL && <button onClick={nuclearReset} style={styles.btnReset}>☢️ Reset Season</button>}
+              </div>
               <div style={styles.table}>
                 <div style={{...styles.tableHeader, background:'#000'}}>
                   <div style={{flex:1, paddingLeft:'15px'}}>RANK</div>
@@ -325,16 +359,18 @@ const styles = {
   tabOff: { flex: 1, padding: '10px', background: '#13141f', border: 'none', color: '#777' },
   matchCard: { background: '#13141f', padding: '12px', margin: '5px 0', borderRadius: '4px', border: '1px solid #252638' },
   grid: { display: 'grid', gridTemplateColumns: 'repeat(9, 1fr)', gap: '6px' },
-  cardComplex: { height: '55px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', borderRadius: '6px', cursor: 'pointer', transition: 'all 0.2s' },
+  cardComplex: { height: '55px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', borderRadius: '6px', cursor: 'pointer' },
   cardNumber: { fontSize: '16px', fontWeight: 'bold', color: '#000' },
-  cardFriend: { fontSize: '9px', fontWeight: '600', color: '#000', textTransform: 'uppercase', overflow: 'hidden', whiteSpace: 'nowrap', width: '90%', textAlign: 'center' },
+  cardFriend: { fontSize: '9px', fontWeight: '600', color: '#000', textTransform: 'uppercase', width: '90%', textAlign: 'center' },
   cardIcon: { fontSize: '18px' },
+  lockBadge: { background: '#ff3d5a', color: '#fff', fontSize: '11px', textAlign: 'center', padding: '5px', borderRadius: '4px', marginBottom: '10px', fontWeight: 'bold' },
   testPanel: { background:'#1a1b28', padding:'10px', borderRadius:'8px', border:'1px dashed #f0c040', marginBottom:'15px', display:'flex', alignItems:'center', gap:'10px' },
   testInput: { background:'#000', color:'#fff', border:'1px solid #333', padding:'5px', fontSize:'12px', flex:1 },
   testBtn: { background:'#333', color:'#777', border:'none', fontSize:'10px', padding:'5px', borderRadius:'4px' },
   adminPanel: { background:'#13141f', padding:'10px', borderRadius:'8px', border:'1px solid #f0c040', marginBottom:'15px' },
   adminInput: { background:'#000', color:'#fff', border:'1px solid #444', width:'50px', padding:'5px', borderRadius:'4px' },
   btnAction: { background:'#f0c040', color:'#000', padding:'5px 12px', border:'none', borderRadius:'4px', fontWeight:'bold', cursor:'pointer' },
+  btnReset: { background:'rgba(255,61,90,0.1)', color:'#ff3d5a', border:'1px solid #ff3d5a', padding:'5px 10px', borderRadius:'4px', fontSize:'11px', fontWeight:'bold', cursor:'pointer' },
   podiumContainer: { display: 'flex', justifyContent: 'center', alignItems: 'flex-end', gap: '8px', margin: '15px 0', height: '170px' },
   pod: { flex: 1, background: '#13141f', border: '1px solid #252638', borderRadius: '8px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '5px' },
   podMedal: { fontSize: '20px' },
