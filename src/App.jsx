@@ -71,15 +71,21 @@ function App() {
         const data = await res.json();
         if (data.status === 'success' && data.data.scorecard) {
           const sc = data.data.scorecard;
-          const t1 = data.data.teams[0];
-          const t2 = data.data.teams[1];
-          const parse = (inn, teamName) => (inn?.batting || []).slice(0, 9).map((b, i) => ({ 
-            pos: i + 1, team: teamName, name: b.batsman?.name || b.name || "Not Played", runs: b.r || 0 
+          // Extract short names or full names of teams
+          const t1Info = data.data.teamInfo?.find(t => t.name === data.data.teams[0]) || { shortname: data.data.teams[0] };
+          const t2Info = data.data.teamInfo?.find(t => t.name === data.data.teams[1]) || { shortname: data.data.teams[1] };
+          
+          const parse = (inn, team) => (inn?.batting || []).slice(0, 9).map((b, i) => ({ 
+            pos: i + 1, 
+            team: team.shortname || team.name, 
+            name: b.batsman?.name || b.name || "Not Played", 
+            runs: b.r || 0 
           }));
-          const scores = { inn1: parse(sc[0], t1), inn2: parse(sc[1], t2), updatedAt: new Date() };
+
+          const scores = { inn1: parse(sc[0], t1Info), inn2: parse(sc[1], t2Info), updatedAt: new Date() };
           await setDoc(doc(db, "active_matches", selectedMatch.id), { scores }, { merge: true });
           setSelectedMatch({ ...selectedMatch, scores });
-          alert("Scorecard Fetched");
+          alert("Scorecard Fetched with Teams");
           return;
         }
       } catch (e) { console.error(e); }
@@ -128,7 +134,7 @@ function App() {
           {tab === 'matches' && (
             <section>
               {user.email === ADMIN_EMAIL && <button onClick={adminFetchMatches} style={styles.btnAdmin}>Refresh Match List (API)</button>}
-              {matches.slice(0,10).map(m => (
+              {matches.slice(0,15).map(m => (
                 <div key={m.id} onClick={() => handleSelectMatch(m)} style={styles.matchCard}><b>{m.name}</b><br/><small>{formatIST(m.dateTimeGMT)}</small></div>
               ))}
             </section>
@@ -154,7 +160,7 @@ function App() {
 
           {tab === 'my-satto' && selectedMatch && (
             <section>
-              {user.email === ADMIN_EMAIL && <button onClick={adminFetchScorecard} style={styles.btnAdmin}>Fetch Scorecard (API)</button>}
+              {user.email === ADMIN_EMAIL && <button onClick={adminFetchScorecard} style={styles.btnAdmin}>Admin: Fetch Scorecard (API Hit)</button>}
               <div style={styles.table}>
                 <div style={styles.tableHeader}>
                   <div style={styles.colF}>Friend</div>
@@ -172,8 +178,8 @@ function App() {
                     <div key={p.userId} style={styles.tableRowGroup}>
                       <div style={styles.colF}>{p.userName.split(' ')[0]}</div>
                       <div style={styles.multiRowCol}>
-                        <div style={styles.subRow}><div style={styles.colT}>{s1?.team || '-'}</div><div style={styles.colN}>{p.inn1Num}</div><div style={styles.colP}>{s1?.name || '-'}</div><div style={styles.colR}>{s1?.runs || 0}</div></div>
-                        <div style={styles.subRow}><div style={styles.colT}>{s2?.team || '-'}</div><div style={styles.colN}>{p.inn2Num}</div><div style={styles.colP}>{s2?.name || '-'}</div><div style={styles.colR}>{s2?.runs || 0}</div></div>
+                        <div style={styles.subRow}><div style={styles.colT}>{s1?.team || '-'}</div><div style={styles.colN}>{p.inn1Num}</div><div style={styles.colP}>{s1?.name || 'Not Played'}</div><div style={styles.colR}>{s1?.runs || 0}</div></div>
+                        <div style={styles.subRow}><div style={styles.colT}>{s2?.team || '-'}</div><div style={styles.colN}>{p.inn2Num}</div><div style={styles.colP}>{s2?.name || 'Not Played'}</div><div style={styles.colR}>{s2?.runs || 0}</div></div>
                       </div>
                       <div style={styles.colTot}><b>{total}</b></div>
                     </div>
@@ -186,7 +192,6 @@ function App() {
           {tab === 'season' && (
             <section><h3>Leaderboard</h3>{leaderboard.map((u, i) => <div key={i} style={styles.friendRow}><span>{u.name}</span><b>{u.totalPoints || 0}</b></div>)}</section>
           )}
-          <div style={{textAlign:'center', marginTop:'20px'}}><button onClick={logout} style={{color:'#ff3d5a', background:'none', border:'none', cursor:'pointer'}}>Logout</button></div>
         </>
       )}
     </div>
@@ -202,20 +207,20 @@ const styles = {
   tabOff: { flex: 1, padding: '10px', background: '#13141f', border: 'none', color: '#777' },
   matchCard: { background: '#13141f', padding: '12px', margin: '5px 0', borderRadius: '4px', border: '1px solid #252638' },
   grid: { display: 'grid', gridTemplateColumns: 'repeat(9, 1fr)', gap: '3px' },
-  cardBox: { height: '35px', display: 'flex', justifyContent: 'center', alignItems: 'center', borderRadius: '2px', border: '1px solid #333', fontSize: '12px' },
+  cardBox: { height: '35px', display: 'flex', justifyContent: 'center', alignItems: 'center', borderRadius: '2px', border: '1px solid #333', fontSize: '10px' },
   btnPrimary: { background: '#ff5f1f', color: 'white', padding: '12px 25px', border: 'none', borderRadius: '4px' },
   btnAdmin: { width: '100%', background: '#f0c040', color: '#000', padding: '8px', border: 'none', borderRadius: '4px', fontWeight: 'bold', marginBottom: '10px' },
-  table: { border: '1px solid #444', background: '#fff', color: '#000', fontSize: '11px' },
+  table: { border: '1px solid #000', background: '#fff', color: '#000', fontSize: '10px' },
   tableHeader: { display: 'flex', background: '#000', color: '#fff', fontWeight: 'bold', textAlign: 'center', padding: '4px 0' },
   tableRowGroup: { display: 'flex', borderBottom: '1px solid #000', alignItems: 'stretch' },
   multiRowCol: { flex: 1, display: 'flex', flexDirection: 'column', borderLeft: '1px solid #000', borderRight: '1px solid #000' },
   subRow: { display: 'flex', borderBottom: '1px solid #000' },
-  colF: { width: '40px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', padding: '2px' },
-  colT: { width: '40px', borderRight: '1px solid #000', padding: '2px', textAlign: 'center' },
-  colN: { width: '30px', borderRight: '1px solid #000', padding: '2px', textAlign: 'center' },
-  colP: { flex: 1, borderRight: '1px solid #000', padding: '2px 5px' },
-  colR: { width: '30px', padding: '2px', textAlign: 'center' },
-  colTot: { width: '40px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px' },
+  colF: { width: '35px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', borderRight: '1px solid #000' },
+  colT: { width: '35px', borderRight: '1px solid #000', textAlign: 'center', padding: '3px 0' },
+  colN: { width: '25px', borderRight: '1px solid #000', textAlign: 'center', padding: '3px 0' },
+  colP: { flex: 1, borderRight: '1px solid #000', padding: '3px 5px', overflow: 'hidden', whiteSpace: 'nowrap' },
+  colR: { width: '25px', textAlign: 'center', padding: '3px 0' },
+  colTot: { width: '35px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px' },
   friendRow: { display: 'flex', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid #222' }
 };
 
