@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { auth, db, loginWithGoogle, logout } from './firebase';
 import { onAuthStateChanged } from 'firebase/auth';
-import { doc, setDoc, getDoc, collection, query, getDocs, where, serverTimestamp } from 'firebase/firestore';
+import { doc, setDoc, getDoc, collection, query, getDocs, where, serverTimestamp, onSnapshot } from 'firebase/firestore';
 
 const CRIC_KEYS = [
   "c3c5ad69-4ca5-44b0-8313-1fc4362ed806",
@@ -15,9 +15,8 @@ function App() {
   const [user, setUser] = useState(null);
   const [matches, setMatches] = useState([]);
   const [selectedMatch, setSelectedMatch] = useState(null);
-  const [matchData, setMatchData] = useState(null); // Stores the shuffled numbers for this match
-  const [myPick, setMyPick] = useState(null);
-  const [otherPicks, setOtherPicks] = useState([]);
+  const [matchData, setMatchData] = useState(null); 
+  const [allMatchPicks, setAllMatchPicks] = useState([]); // Real-time sync of ALL picks
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -28,6 +27,19 @@ function App() {
     });
     return () => unsubscribe();
   }, []);
+
+  // Real-time listener for the selected match to prevent double-picks
+  useEffect(() => {
+    if (!selectedMatch || !user) return;
+
+    const q = query(collection(db, "match_picks"), where("matchId", "==", selectedMatch.id));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const picks = snapshot.docs.map(d => d.data());
+      setAllMatchPicks(picks);
+    });
+
+    return () => unsubscribe();
+  }, [selectedMatch, user]);
 
   const loadMatches = async () => {
     const cacheRef = doc(db, "system", "match_cache");
@@ -52,15 +64,10 @@ function App() {
     }
   };
 
-  const shuffle = () => {
-    let arr = [1, 2, 3, 4, 5, 6, 7, 8, 9];
-    return arr.sort(() => Math.random() - 0.5);
-  };
+  const shuffle = () => [1, 2, 3, 4, 5, 6, 7, 8, 9].sort(() => Math.random() - 0.5);
 
   const handleSelectMatch = async (match) => {
     setSelectedMatch(match);
-    
-    // 1. Get or Create the "Deck" for this match so numbers are same for all friends
     const matchRef = doc(db, "active_matches", match.id);
     let mSnap = await getDoc(matchRef);
     
@@ -71,37 +78,36 @@ function App() {
     } else {
       setMatchData(mSnap.data());
     }
-
-    // 2. Load My Pick
-    const pickRef = doc(db, "match_picks", `${match.id}_${user.uid}`);
-    const pSnap = await getDoc(pickRef);
-    if (pSnap.exists()) setMyPick(pSnap.data());
-    else setMyPick(null);
-
-    // 3. Load Others
-    const q = query(collection(db, "match_picks"), where("matchId", "==", match.id));
-    const qSnap = await getDocs(q);
-    setOtherPicks(qSnap.docs.map(d => d.data()).filter(p => p.userId !== user.uid));
   };
 
   const lockCard = async (inn, cardIndex) => {
-    if (myPick && myPick[`inn${inn}`] !== undefined) return;
-    
+    // 1. Check if user already picked for this innings
+    const myExistingPick = allMatchPicks.find(p => p.userId === user.uid);
+    if (myExistingPick && myExistingPick[`inn${inn}Card`] !== undefined) return;
+
+    // 2. Check if ANYONE else has already taken this specific card
+    const isTaken = allMatchPicks.some(p => p[`inn${inn}Card`] === cardIndex);
+    if (isTaken) return alert("This card is already taken by a friend!");
+
     const revealedNumber = matchData[`inn${inn}Deck`][cardIndex];
     
-    const newPick = {
-      ...myPick,
+    const newPickData = {
       userId: user.uid,
       userName: user.displayName,
       matchId: selectedMatch.id,
       [`inn${inn}Card`]: cardIndex,
       [`inn${inn}Num`]: revealedNumber,
-      timestamp: new Date()
+      timestamp: serverTimestamp()
     };
     
-    await setDoc(doc(db, "match_picks", `${selectedMatch.id}_${user.uid}`), newPick, { merge: true });
-    setMyPick(newPick);
+    try {
+      await setDoc(doc(db, "match_picks", `${selectedMatch.id}_${user.uid}`), newPickData, { merge: true });
+    } catch (e) {
+      alert("Selection failed. Try again.");
+    }
   };
+
+  const myPick = allMatchPicks.find(p => p.userId === user.uid);
 
   if (loading) return <div style={styles.center}>🏏 Loading Satto...</div>;
 
@@ -139,27 +145,41 @@ function App() {
               <h2 style={styles.goldText}>{selectedMatch.name}</h2>
               
               <div style={styles.arena}>
-                <p style={styles.label}>INN 1: Click to Reveal Number</p>
+                {/* INNINGS 1 */}
+                <p style={styles.label}>INN 1: Select Your Card</p>
                 <div style={styles.grid}>
                   {[...Array(9)].map((_, i) => {
-                    const isSelected = myPick?.inn1Card === i;
+                    const picker = allMatchPicks.find(p => p.inn1Card === i);
+                    const isMine = picker?.userId === user.uid;
                     return (
-                      <div key={i} onClick={() => lockCard(1, i)} 
-                        style={{...styles.card, background: isSelected ? '#1fd18a' : '#13141f', color: isSelected ? '#000' : '#fff'}}>
-                        {isSelected ? `#${myPick.inn1Num}` : "🏏"}
+                      <div key={i} onClick={() => !picker && lockCard(1, i)} 
+                        style={{
+                          ...styles.card, 
+                          background: isMine ? '#1fd18a' : picker ? '#32334a' : '#13141f',
+                          cursor: picker ? 'default' : 'pointer',
+                          opacity: picker && !isMine ? 0.5 : 1
+                        }}>
+                        {isMine ? `#${picker.inn1Num}` : picker ? "✖" : "🏏"}
                       </div>
                     );
                   })}
                 </div>
 
-                <p style={{...styles.label, marginTop: '20px'}}>INN 2: Click to Reveal Number</p>
+                {/* INNINGS 2 */}
+                <p style={{...styles.label, marginTop: '20px'}}>INN 2: Select Your Card</p>
                 <div style={styles.grid}>
                   {[...Array(9)].map((_, i) => {
-                    const isSelected = myPick?.inn2Card === i;
+                    const picker = allMatchPicks.find(p => p.inn2Card === i);
+                    const isMine = picker?.userId === user.uid;
                     return (
-                      <div key={i} onClick={() => lockCard(2, i)} 
-                        style={{...styles.card, background: isSelected ? '#ff3d5a' : '#13141f', color: isSelected ? '#fff' : '#fff'}}>
-                        {isSelected ? `#${myPick.inn2Num}` : "🏏"}
+                      <div key={i} onClick={() => !picker && lockCard(2, i)} 
+                        style={{
+                          ...styles.card, 
+                          background: isMine ? '#ff3d5a' : picker ? '#32334a' : '#13141f',
+                          cursor: picker ? 'default' : 'pointer',
+                          opacity: picker && !isMine ? 0.5 : 1
+                        }}>
+                        {isMine ? `#${picker.inn2Num}` : picker ? "✖" : "🏏"}
                       </div>
                     );
                   })}
@@ -167,11 +187,13 @@ function App() {
               </div>
 
               <div style={styles.friendsSection}>
-                <h4 style={styles.sectionTitle}>Friends in this Match</h4>
-                {otherPicks.length === 0 ? <p style={{fontSize:'12px', color:'#555'}}>No other picks yet.</p> : 
-                  otherPicks.map((p, idx) => (
+                <h4 style={styles.sectionTitle}>Live Picks Summary</h4>
+                {allMatchPicks.length === 0 ? <p style={{fontSize:'12px', color:'#555'}}>No picks yet.</p> : 
+                  allMatchPicks.map((p, idx) => (
                     <div key={idx} style={styles.friendRow}>
-                      <span style={{fontWeight:'bold'}}>{p.userName}</span>
+                      <span style={{fontWeight:'bold', color: p.userId === user.uid ? '#f0c040' : '#eee'}}>
+                        {p.userName} {p.userId === user.uid ? '(You)' : ''}
+                      </span>
                       <span>
                         <span style={{color:'#1fd18a'}}>#{p.inn1Num || '?'}</span> | 
                         <span style={{color:'#ff3d5a'}}> #{p.inn2Num || '?'}</span>
@@ -194,12 +216,12 @@ const styles = {
   authPage: { height: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' },
   header: { display: 'flex', justifyContent: 'space-between', paddingBottom: '10px', borderBottom: '1px solid #252638' },
   goldText: { color: '#f0c040' },
-  sectionTitle: { fontSize: '12px', color: '#7a7b98', textTransform: 'uppercase', marginBottom: '10px' },
+  sectionTitle: { fontSize: '11px', color: '#7a7b98', textTransform: 'uppercase', marginBottom: '10px', letterSpacing: '1px' },
   matchCard: { background: '#13141f', padding: '12px', margin: '8px 0', borderRadius: '8px', cursor: 'pointer', border: '2px solid' },
   arena: { marginTop: '20px', background: '#1a1b28', padding: '15px', borderRadius: '12px', border: '1px solid #32334a' },
   grid: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' },
-  card: { height: '60px', display: 'flex', justifyContent: 'center', alignItems: 'center', borderRadius: '8px', cursor: 'pointer', border: '1px solid #32334a', fontSize: '22px', fontWeight: 'bold', transition: 'all 0.3s' },
-  label: { fontSize: '11px', color: '#7a7b98', marginBottom: '8px', letterSpacing: '1px' },
+  card: { height: '60px', display: 'flex', justifyContent: 'center', alignItems: 'center', borderRadius: '8px', border: '1px solid #32334a', fontSize: '20px', fontWeight: 'bold', transition: 'all 0.2s' },
+  label: { fontSize: '11px', color: '#7a7b98', marginBottom: '8px' },
   btnPrimary: { background: '#ff5f1f', color: 'white', border: 'none', padding: '12px 25px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' },
   btnSmall: { background: 'none', color: '#7a7b98', border: '1px solid #7a7b98', padding: '4px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '11px', marginBottom: '10px' },
   friendsSection: { marginTop: '30px', padding: '15px', background: '#13141f', borderRadius: '12px' },
