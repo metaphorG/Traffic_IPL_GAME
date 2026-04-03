@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { auth, db, loginWithGoogle, logout } from './firebase';
 import { onAuthStateChanged } from 'firebase/auth';
-import { doc, setDoc, getDoc, collection, query, getDocs, where, serverTimestamp, onSnapshot, increment, writeBatch } from 'firebase/firestore';
+import { doc, setDoc, deleteDoc, getDoc, collection, query, getDocs, where, serverTimestamp, onSnapshot, increment, writeBatch } from 'firebase/firestore';
 
 const CRIC_KEYS = ["c3c5ad69-4ca5-44b0-8313-1fc4362ed806", "eb4fcb6b-a26b-4594-9893-28412197c556", "64dcc6e7-c783-414b-9047-6abb463edec0", "d009046b-65c7-4ff3-abad-3e0a7f0574ca"];
 const IPL_SERIES_ID = "87c62aac-bc3c-4738-ab93-19da0690488f";
@@ -48,7 +48,7 @@ function App() {
 
   const loadLeaderboard = async () => {
     const snap = await getDocs(collection(db, "users"));
-    setLeaderboard(snap.docs.map(d => d.data()).sort((a,b) => b.totalPoints - a.totalPoints));
+    setLeaderboard(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => b.totalPoints - a.totalPoints));
   };
 
   const loadMatchHistory = async () => {
@@ -60,6 +60,22 @@ function App() {
         return { id: d.id, ...d.data(), allPicks: picksSnap.docs.map(p => p.data()) };
     }));
     setMatchHistory(historyData.sort((a,b) => b.updatedAt - a.updatedAt));
+  };
+
+  // --- ADMIN DATA HELPERS ---
+  const updateSeasonPoint = async (userId, newVal) => {
+    try {
+      await setDoc(doc(db, "users", userId), { totalPoints: parseInt(newVal) || 0 }, { merge: true });
+      loadLeaderboard();
+    } catch (e) { console.error(e); }
+  };
+
+  const deletePick = async (pickId) => {
+    if (window.confirm("Delete this pick? Friend must re-select numbers.")) {
+      try {
+        await deleteDoc(doc(db, "match_picks", pickId));
+      } catch (e) { console.error(e); }
+    }
   };
 
   const adminFetchMatches = async () => {
@@ -222,6 +238,9 @@ function App() {
         {['matches', 'play', 'results', 'season'].map(t => (
           <button key={t} onClick={() => setTab(t)} style={tab === t ? styles.tabOn : styles.tabOff} disabled={!selectedMatch && (t === 'play' || t === 'results')}>{t.toUpperCase()}</button>
         ))}
+        {user.email === ADMIN_EMAIL && (
+          <button onClick={() => setTab('data')} style={tab === 'data' ? styles.tabOn : styles.tabOff}>DATA</button>
+        )}
       </nav>
 
       {tab === 'matches' && (
@@ -292,7 +311,7 @@ function App() {
           <h2 style={styles.sectionHeader}>🏆 SEASON STANDINGS</h2>
           <div style={{...styles.tableWrap, marginBottom:'40px', background:'#0e0f1a'}}>
              {leaderboard.map((u, i) => (
-               <div key={i} style={{...styles.tableRow, background: i === 0 ? 'rgba(240,192,64,0.05)' : 'transparent'}}><div style={{flex:1, color:'#52536e'}}>0{i+1}</div><div style={{flex:3, fontWeight:'bold', color: i === 0 ? '#f0c040' : '#eee'}}>{u.name}</div><div style={{flex:2, textAlign:'right', color: u.totalPoints >= 0 ? '#1fd18a' : '#ff3d5a', fontSize:'22px', fontFamily:'Bebas Neue'}}>{u.totalPoints > 0 ? '+' : ''}{u.totalPoints}</div></div>
+               <div key={i} style={styles.tableRow}><div style={{flex:1, color:'#52536e'}}>0{i+1}</div><div style={{flex:3, fontWeight:'bold', color: i === 0 ? '#f0c040' : '#eee'}}>{u.name}</div><div style={{flex:2, textAlign:'right', color: u.totalPoints >= 0 ? '#1fd18a' : '#ff3d5a', fontSize:'22px', fontFamily:'Bebas Neue'}}>{u.totalPoints > 0 ? '+' : ''}{u.totalPoints}</div></div>
              ))}
           </div>
 
@@ -320,6 +339,54 @@ function App() {
           })}
         </section>
       )}
+
+      {/* --- NEW ADMIN DATA TAB --- */}
+      {tab === 'data' && user.email === ADMIN_EMAIL && (
+        <section style={{padding: '0 15px'}}>
+          <h2 style={styles.sectionHeader}>⚙️ DATA CONTROL CENTER</h2>
+          
+          <div style={styles.adminDataBox}>
+            <h4 style={{color:'#f0c040', marginBottom:'15px', fontFamily:'Bebas Neue', letterSpacing:'1px'}}>MANUAL POINTS ADJUSTMENT</h4>
+            {leaderboard.map(u => (
+              <div key={u.id} style={styles.adminDataRow}>
+                <span style={{fontWeight:'600'}}>{u.name}</span>
+                <div style={{display:'flex', alignItems:'center', gap:'10px'}}>
+                    <span style={{fontSize:'10px', color:'#52536e'}}>POINTS:</span>
+                    <input 
+                      type="number" 
+                      defaultValue={u.totalPoints} 
+                      onBlur={(e) => updateSeasonPoint(u.id, e.target.value)} 
+                      style={styles.dataInput} 
+                    />
+                </div>
+              </div>
+            ))}
+            <p style={{fontSize:'10px', color:'#52536e', marginTop:'10px'}}>* Edit number and click outside (Blur) to auto-save.</p>
+          </div>
+
+          <div style={{...styles.adminDataBox, marginTop:'25px'}}>
+            <h4 style={{color:'#f0c040', marginBottom:'15px', fontFamily:'Bebas Neue', letterSpacing:'1px'}}>
+              MANAGE PICKS: {selectedMatch?.name || 'SELECT A MATCH FIRST'}
+            </h4>
+            {allPicks.length === 0 ? <p style={{color:'#52536e'}}>No picks found for this match.</p> : 
+              allPicks.map((p, idx) => (
+                <div key={idx} style={styles.adminDataRow}>
+                  <div>
+                      <div style={{fontWeight:'bold'}}>{p.userName}</div>
+                      <div style={{fontSize:'10px', color:'#7a7b98'}}>Inn1: #{p.inn1Num} | Inn2: #{p.inn2Num}</div>
+                  </div>
+                  <button 
+                      onClick={() => deletePick(`${selectedMatch.id}_${p.userId}`)} 
+                      style={{background:'rgba(255,61,90,0.1)', color:'#ff3d5a', border:'1px solid #ff3d5a', borderRadius:'4px', padding:'4px 10px', fontSize:'10px', fontWeight:'bold'}}
+                  >
+                      DELETE PICK
+                  </button>
+                </div>
+              ))
+            }
+          </div>
+        </section>
+      )}
     </div>
   );
 }
@@ -345,7 +412,7 @@ const styles = {
   cardNumber: { fontSize: '32px', fontFamily: 'Bebas Neue' },
   cardFriend: { fontSize: '11px', fontWeight: '800', textTransform: 'uppercase' },
   nextBox: { marginTop:'30px', textAlign:'center', padding:'20px', background:'rgba(240,192,64,0.05)', borderRadius:'12px', border:'1px dashed #f0c040' },
-  adminPanel: { background:'#13141f', padding:'15px', borderRadius:'15px', border:'1px solid #f0c040', marginBottom:'25px', display:'flex', gap:'10px' },
+  adminPanel: { background:'#13141f', padding:'20px', borderRadius:'15px', border:'1px solid #f0c040', marginBottom:'25px', display:'flex', gap:'10px' },
   adminInput: { background:'#000', color:'#fff', border:'1px solid #333', width:'70px', padding:'10px', borderRadius:'8px', textAlign:'center' },
   btnAction: { flex: 1, background:'#f0c040', color:'#000', border:'none', borderRadius:'8px', fontWeight:'bold' },
   btnPrimary: { background: 'linear-gradient(135deg, #ff5f1f, #d44a0f)', color: 'white', padding: '15px 45px', border: 'none', borderRadius: '100px', fontWeight: 'bold', fontSize: '14px' },
@@ -365,7 +432,10 @@ const styles = {
   lockBadge: { background: 'rgba(255,255,255,0.05)', color: '#7a7b98', fontSize: '11px', textAlign: 'center', padding: '6px', borderRadius: '100px', border: '1px solid #252638', marginBottom: '15px' },
   testPanel: { background:'rgba(240,192,64,0.05)', padding:'12px', borderRadius:'10px', border:'1px dashed #f0c040', marginBottom:'20px', display:'flex', gap:'12px' },
   testInput: { flex:1, background:'#000', color:'#fff', border:'1px solid #333', padding:'8px', borderRadius:'6px' },
-  testBtn: { background:'#333', color:'#aaa', border:'none', padding:'0 15px', borderRadius:'6px', fontSize:'11px' }
+  testBtn: { background:'#333', color:'#aaa', border:'none', padding:'0 15px', borderRadius:'6px', fontSize:'11px' },
+  adminDataBox: { background: '#13141f', padding: '20px', borderRadius: '15px', border: '1px solid #252638' },
+  adminDataRow: { display: 'flex', justifyContent: 'space-between', padding: '12px 0', borderBottom: '1px solid #1a1b28', alignItems:'center' },
+  dataInput: { background:'#000', color:'#f0c040', border:'1px solid #333', padding:'6px', borderRadius:'6px', width:'70px', textAlign:'center', fontWeight:'bold', fontSize:'14px' }
 };
 
 export default App;
