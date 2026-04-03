@@ -34,8 +34,18 @@ function App() {
     return onSnapshot(q, (snap) => setAllPicks(snap.docs.map(d => d.data())));
   }, [selectedMatch]);
 
+  // FIXED: STRICT GMT TO IST CONVERSION
   const formatIST = (gmtStr) => {
-    return new Date(gmtStr).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' });
+    if (!gmtStr) return "TBD";
+    const date = new Date(gmtStr + "Z"); // Append Z to force UTC interpretation
+    return date.toLocaleString('en-IN', {
+      timeZone: 'Asia/Kolkata',
+      day: '2-digit',
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true
+    });
   };
 
   const loadMatchCache = async () => {
@@ -118,8 +128,11 @@ function App() {
         } else if (startPos === 1) {
           if (count === 1) r.net = p2Amt - adminPull;
           else r.net = Math.round((p2Amt + adminPull) / count) - adminPull;
-        } else if (startPos === 2) r.net = count === 1 ? 0 : -adminPull;
-        else r.net = -adminPull;
+        } else if (startPos === 2) {
+          r.net = count === 1 ? 0 : -adminPull;
+        } else {
+          r.net = -adminPull;
+        }
       });
       rank += count;
     }
@@ -140,13 +153,10 @@ function App() {
     loadLeaderboard();
   };
 
-  // NUCLEAR RESET: Admin only
   const nuclearReset = async () => {
     if (user.email !== ADMIN_EMAIL) return;
-    if (!window.confirm("☢️ NUCLEAR RESET: This will delete ALL match data, picks, and the leaderboard. Are you 100% sure?")) return;
-
+    if (!window.confirm("☢️ NUCLEAR RESET: Clear EVERYTHING?")) return;
     const collectionsToDelete = ['match_picks', 'active_matches', 'users'];
-    
     try {
       for (const colName of collectionsToDelete) {
         const querySnapshot = await getDocs(collection(db, colName));
@@ -154,12 +164,9 @@ function App() {
         querySnapshot.forEach((doc) => batch.delete(doc.ref));
         await batch.commit();
       }
-      alert("✅ Database Wiped. Starting Fresh!");
+      alert("Database Wiped!");
       window.location.reload();
-    } catch (e) {
-      console.error(e);
-      alert("Error wiping database. Check Firebase Console.");
-    }
+    } catch (e) { alert("Reset Failed"); }
   };
 
   const handleSelectMatch = async (m) => {
@@ -180,7 +187,7 @@ function App() {
   };
 
   const lockCard = async (inn, idx) => {
-    if (selectedMatch?.settled) return alert("This match is already finished.");
+    if (selectedMatch?.settled) return alert("Match Finished.");
     const effectiveUID = testName ? `test_${testName.replace(/\s/g, '_')}` : user.uid;
     const effectiveName = testName || user.displayName;
     const myExisting = allPicks.find(p => p.userId === effectiveUID);
@@ -194,55 +201,73 @@ function App() {
     }, { merge: true });
   };
 
-  if (loading) return <div style={styles.center}>Loading IST...</div>;
+  if (loading) return <div style={styles.center}>🏏 Loading...</div>;
 
   return (
     <div style={styles.container}>
+      {/* IMPORT FONTS */}
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Rajdhani:wght@400;600;700&display=swap');
+        body { font-family: 'Rajdhani', sans-serif; background: #07080f; }
+        .gold-glow { text-shadow: 0 0 10px rgba(240, 192, 64, 0.4); }
+        .glass { background: rgba(19, 20, 31, 0.8); backdrop-filter: blur(10px); }
+      `}</style>
+
       {!user ? (
-        <div style={styles.authPage}><button onClick={loginWithGoogle} style={styles.btnPrimary}>Login</button></div>
+        <div style={styles.authPage}>
+            <h1 style={styles.heroTitle}>ટ્રાફિકવાળાનો સટ્ટો</h1>
+            <button onClick={loginWithGoogle} style={styles.btnPrimary}>Sign in with Google</button>
+        </div>
       ) : (
         <>
           <nav style={styles.tabs}>
-            <button onClick={() => setTab('matches')} style={tab === 'matches' ? styles.tabOn : styles.tabOff}>Matches</button>
-            <button onClick={() => setTab('play')} style={tab === 'play' ? styles.tabOn : styles.tabOff} disabled={!selectedMatch}>Play</button>
-            <button onClick={() => setTab('results')} style={tab === 'results' ? styles.tabOn : styles.tabOff} disabled={!selectedMatch}>Results</button>
-            <button onClick={() => setTab('season')} style={tab === 'season' ? styles.tabOn : styles.tabOff}>Season</button>
+            {['matches', 'play', 'results', 'season'].map(t => (
+              <button key={t} onClick={() => setTab(t)} 
+                style={tab === t ? styles.tabOn : styles.tabOff} 
+                disabled={!selectedMatch && (t === 'play' || t === 'results')}>
+                {t.toUpperCase()}
+              </button>
+            ))}
           </nav>
 
           {tab === 'matches' && (
-            <section>
-              {user.email === ADMIN_EMAIL && <button onClick={adminFetchMatches} style={styles.btnAdmin}>Refresh Match List (API)</button>}
-              {matches.slice(0,15).map(m => (
-                <div key={m.id} onClick={() => handleSelectMatch(m)} style={styles.matchCard}><b>{m.name}</b><br/><small>{formatIST(m.dateTimeGMT)}</small></div>
+            <section style={{padding: '0 10px'}}>
+              {user.email === ADMIN_EMAIL && <button onClick={adminFetchMatches} style={styles.btnAdmin}>ADMIN: SYNC FIXTURES</button>}
+              {matches.slice(0,12).map(m => (
+                <div key={m.id} onClick={() => handleSelectMatch(m)} style={styles.matchCard}>
+                  <div style={{color: '#7a7b98', fontSize: '11px', marginBottom: '4px'}}>🏆 IPL 2026</div>
+                  <b style={{fontSize: '16px'}}>{m.name}</b>
+                  <div style={{color: '#ff5f1f', fontSize: '12px', marginTop: '6px', fontWeight: 'bold'}}>
+                    🕒 {formatIST(m.dateTimeGMT)}
+                  </div>
+                </div>
               ))}
             </section>
           )}
 
           {tab === 'play' && selectedMatch && (
-            <section>
+            <section style={{padding: '0 10px'}}>
               {user.email === ADMIN_EMAIL && !selectedMatch.settled && (
                 <div style={styles.testPanel}>
-                  <span style={{fontSize:'11px', color:'#f0c040'}}>🧪 TEST MODE: Pick as:</span>
-                  <input placeholder="Friend Name" value={testName} onChange={e => setTestName(e.target.value)} style={styles.testInput}/>
-                  <button onClick={() => setTestName("")} style={styles.testBtn}>Reset to Me</button>
+                  <input placeholder="Enter Test Friend Name" value={testName} onChange={e => setTestName(e.target.value)} style={styles.testInput}/>
+                  <button onClick={() => setTestName("")} style={styles.testBtn}>CLEAR</button>
                 </div>
               )}
-
-              <h3 style={{marginBottom:'15px', fontSize:'14px'}}>{selectedMatch.name}</h3>
-              {selectedMatch.settled && <div style={styles.lockBadge}>🔒 Match Locked & Settled</div>}
+              <h3 style={styles.matchHeader}>{selectedMatch.name}</h3>
+              {selectedMatch.settled && <div style={styles.lockBadge}>LOCK STATE: FINALIZED</div>}
               
               <div style={styles.grid}>
                 {[...Array(9)].map((_, i) => {
                   const p = allPicks.find(x => x.inn1Card === i);
                   return (
                     <div key={i} onClick={() => !p && lockCard(1, i)} 
-                      style={{...styles.cardComplex, background: p ? '#1fd18a' : '#13141f', border: p ? '1px solid #1fd18a' : '1px solid #333'}}>
+                      style={{...styles.cardComplex, background: p ? '#1fd18a' : '#13141f', border: p ? '1px solid #1fd18a' : '1px solid #32334a', boxShadow: p ? '0 0 15px rgba(31,209,138,0.2)' : 'none'}}>
                       {p ? (
                         <>
                           <div style={styles.cardNumber}>#{p.inn1Num}</div>
                           <div style={styles.cardFriend}>{p.userName.split(' ')[0]}</div>
                         </>
-                      ) : <div style={styles.cardIcon}>🟢</div>}
+                      ) : <div style={{fontSize: '20px'}}>🟢</div>}
                     </div>
                   );
                 })}
@@ -253,13 +278,13 @@ function App() {
                   const p = allPicks.find(x => x.inn2Card === i);
                   return (
                     <div key={i} onClick={() => !p && lockCard(2, i)} 
-                      style={{...styles.cardComplex, background: p ? '#ff3d5a' : '#13141f', border: p ? '1px solid #ff3d5a' : '1px solid #333'}}>
+                      style={{...styles.cardComplex, background: p ? '#ff3d5a' : '#13141f', border: p ? '1px solid #ff3d5a' : '1px solid #32334a', boxShadow: p ? '0 0 15px rgba(255,61,90,0.2)' : 'none'}}>
                       {p ? (
                         <>
                           <div style={styles.cardNumber}>#{p.inn2Num}</div>
                           <div style={styles.cardFriend}>{p.userName.split(' ')[0]}</div>
                         </>
-                      ) : <div style={styles.cardIcon}>🔴</div>}
+                      ) : <div style={{fontSize: '20px'}}>🔴</div>}
                     </div>
                   );
                 })}
@@ -268,29 +293,25 @@ function App() {
           )}
 
           {tab === 'results' && selectedMatch && (
-            <section>
+            <section style={{padding: '0 10px'}}>
               {user.email === ADMIN_EMAIL && (
                 <div style={styles.adminPanel}>
-                  {selectedMatch.settled ? (
-                    <div style={{color:'#1fd18a', fontWeight:'bold', textAlign:'center'}}>✅ POINTS SUBMITTED TO SEASON</div>
-                  ) : (
-                    <div style={{display:'flex', gap:'10px', alignItems:'center'}}>
-                      <label style={{fontSize:'12px'}}>Pull:</label>
-                      <input type="number" value={adminPull} onChange={(e) => setAdminPull(parseInt(e.target.value) || 0)} style={styles.adminInput}/>
-                      <button onClick={adminFetchScorecard} style={styles.btnAction}>Fetch Scorecard</button>
-                      <button onClick={submitToSeason} style={{...styles.btnAction, background:'#1fd18a'}}>Final Submit</button>
-                    </div>
-                  )}
+                  {selectedMatch.settled ? <div style={{color:'#1fd18a', textAlign:'center', fontWeight:'bold'}}>MATCH ARCHIVED</div> : 
+                  <div style={{display:'flex', gap:'8px'}}>
+                    <input type="number" value={adminPull} onChange={(e) => setAdminPull(parseInt(e.target.value))} style={styles.adminInput}/>
+                    <button onClick={adminFetchScorecard} style={styles.btnAction}>FETCH API</button>
+                    <button onClick={submitToSeason} style={{...styles.btnAction, background:'#1fd18a'}}>SUBMIT</button>
+                  </div>}
                 </div>
               )}
               
               <div style={styles.podiumContainer}>
                 {finalRankings.slice(0, 3).map((r, i) => (
-                  <div key={i} style={{...styles.pod, order: i === 0 ? 2 : i === 1 ? 1 : 3, height: i === 0 ? '160px' : '140px'}}>
-                    <div style={styles.podMedal}>{i === 0 ? '🥇' : i === 1 ? '🥈' : '🥉'}</div>
-                    <div style={styles.podName}>{r.userName.split(' ')[0]}</div>
+                  <div key={i} style={{...styles.pod, order: i === 0 ? 2 : i === 1 ? 1 : 3, height: i === 0 ? '160px' : '140px', borderColor: i === 0 ? '#f0c040' : '#252638'}}>
+                    <div style={{fontSize:'30px'}}>{i === 0 ? '🥇' : i === 1 ? '🥈' : '🥉'}</div>
+                    <div style={styles.podName}>{r.userName}</div>
                     <div style={styles.podScore}>{r.total}</div>
-                    <div style={{color: r.net >= 0 ? '#1fd18a' : '#ff3d5a', fontSize: '11px'}}>{r.net > 0 ? '+' : ''}{r.net} pts</div>
+                    <div style={{color: r.net >= 0 ? '#1fd18a' : '#ff3d5a', fontSize: '13px', fontWeight:'bold'}}>{r.net > 0 ? '+' : ''}{r.net}</div>
                   </div>
                 ))}
               </div>
@@ -298,22 +319,20 @@ function App() {
               <div style={styles.table}>
                 <div style={styles.tableHeader}>
                   <div style={styles.colF}>FRIEND</div>
-                  <div style={styles.colInn}>{selectedMatch.scores?.inn1?.[0]?.team || "TEAM 1"}</div>
+                  <div style={styles.colInn}>BATSMAN 1</div>
                   <div style={styles.colR}>RUNS</div>
-                  <div style={styles.colInn}>{selectedMatch.scores?.inn2?.[0]?.team || "TEAM 2"}</div>
+                  <div style={styles.colInn}>BATSMAN 2</div>
                   <div style={styles.colR}>RUNS</div>
-                  <div style={styles.colTot}>TOTAL</div>
-                  <div style={styles.colNet}>NET</div>
+                  <div style={styles.colTot}>TOT</div>
                 </div>
                 {finalRankings.map((p, i) => (
                   <div key={i} style={styles.tableRow}>
                     <div style={styles.colF}>{p.userName.split(' ')[0]}</div>
-                    <div style={styles.colInn}><span style={{color:'#1fd18a', fontWeight:'bold'}}>#{p.inn1Num}</span> {p.p1Name}</div>
+                    <div style={styles.colInn}><span style={{color:'#1fd18a', fontWeight:'bold'}}>#{p.inn1Num}</span> <span style={{fontSize:'9px', marginLeft:'4px'}}>{p.p1Name}</span></div>
                     <div style={styles.colR}>{p.r1}</div>
-                    <div style={styles.colInn}><span style={{color:'#ff3d5a', fontWeight:'bold'}}>#{p.inn2Num}</span> {p.p2Name}</div>
+                    <div style={styles.colInn}><span style={{color:'#ff3d5a', fontWeight:'bold'}}>#{p.inn2Num}</span> <span style={{fontSize:'9px', marginLeft:'4px'}}>{p.p2Name}</span></div>
                     <div style={styles.colR}>{p.r2}</div>
-                    <div style={{...styles.colTot, color:'#f0c040'}}>{p.total}</div>
-                    <div style={{...styles.colNet, color: p.net > 0 ? '#1fd18a' : p.net === 0 ? '#777' : '#ff3d5a'}}>{p.net > 0 ? '+' : ''}{p.net}</div>
+                    <div style={{...styles.colTot, color:'#f0c040', fontWeight:'bold'}}>{p.total}</div>
                   </div>
                 ))}
               </div>
@@ -321,22 +340,22 @@ function App() {
           )}
 
           {tab === 'season' && (
-            <section>
+            <section style={{padding: '0 10px'}}>
               <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'15px'}}>
-                <h3 style={{margin:0}}>Season Leaderboard</h3>
-                {user.email === ADMIN_EMAIL && <button onClick={nuclearReset} style={styles.btnReset}>☢️ Reset Season</button>}
+                <h2 style={{color: '#f0c040', fontFamily: 'Bebas Neue', letterSpacing: '2px'}}>LEADERBOARD</h2>
+                {user.email === ADMIN_EMAIL && <button onClick={nuclearReset} style={styles.btnReset}>RESET ALL</button>}
               </div>
               <div style={styles.table}>
                 <div style={{...styles.tableHeader, background:'#000'}}>
                   <div style={{flex:1, paddingLeft:'15px'}}>RANK</div>
-                  <div style={{flex:3}}>FRIEND</div>
-                  <div style={{flex:2, textAlign:'right', paddingRight:'15px'}}>TOTAL POINTS</div>
+                  <div style={{flex:3}}>NAME</div>
+                  <div style={{flex:2, textAlign:'right', paddingRight:'15px'}}>POINTS</div>
                 </div>
                 {leaderboard.map((u, i) => (
-                  <div key={i} style={{...styles.tableRow, background: i % 2 === 0 ? '#13141f' : '#1a1b28'}}>
-                    <div style={{flex:1, paddingLeft:'15px'}}>{i+1}</div>
-                    <div style={{flex:3, fontWeight:'bold'}}>{u.name}</div>
-                    <div style={{flex:2, textAlign:'right', paddingRight:'15px', color: u.totalPoints >= 0 ? '#1fd18a' : '#ff3d5a'}}>
+                  <div key={i} style={{...styles.tableRow, background: i === 0 ? 'rgba(240,192,64,0.05)' : 'transparent'}}>
+                    <div style={{flex:1, paddingLeft:'15px', fontWeight:'bold', color:'#7a7b98'}}>{i+1}</div>
+                    <div style={{flex:3, fontWeight:'bold', color: i === 0 ? '#f0c040' : '#eee'}}>{u.name}</div>
+                    <div style={{flex:2, textAlign:'right', paddingRight:'15px', color: u.totalPoints >= 0 ? '#1fd18a' : '#ff3d5a', fontWeight:'bold', fontSize:'16px', fontFamily:'Bebas Neue'}}>
                       {u.totalPoints > 0 ? '+' : ''}{u.totalPoints}
                     </div>
                   </div>
@@ -351,39 +370,39 @@ function App() {
 }
 
 const styles = {
-  container: { background: '#07080f', minHeight: '100vh', color: '#eee', padding: '10px', fontFamily: 'sans-serif' },
-  center: { height: '100vh', display: 'flex', justifyContent: 'center', alignItems: 'center', background: '#07080f', color: 'white' },
-  authPage: { height: '100vh', display: 'flex', justifyContent: 'center', alignItems: 'center' },
-  tabs: { display: 'flex', gap: '2px', marginBottom: '15px' },
-  tabOn: { flex: 1, padding: '10px', background: '#ff5f1f', border: 'none', color: 'white', fontWeight: 'bold' },
-  tabOff: { flex: 1, padding: '10px', background: '#13141f', border: 'none', color: '#777' },
-  matchCard: { background: '#13141f', padding: '12px', margin: '5px 0', borderRadius: '4px', border: '1px solid #252638' },
-  grid: { display: 'grid', gridTemplateColumns: 'repeat(9, 1fr)', gap: '6px' },
-  cardComplex: { height: '55px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', borderRadius: '6px', cursor: 'pointer' },
-  cardNumber: { fontSize: '16px', fontWeight: 'bold', color: '#000' },
-  cardFriend: { fontSize: '9px', fontWeight: '600', color: '#000', textTransform: 'uppercase', width: '90%', textAlign: 'center' },
-  cardIcon: { fontSize: '18px' },
-  lockBadge: { background: '#ff3d5a', color: '#fff', fontSize: '11px', textAlign: 'center', padding: '5px', borderRadius: '4px', marginBottom: '10px', fontWeight: 'bold' },
-  testPanel: { background:'#1a1b28', padding:'10px', borderRadius:'8px', border:'1px dashed #f0c040', marginBottom:'15px', display:'flex', alignItems:'center', gap:'10px' },
-  testInput: { background:'#000', color:'#fff', border:'1px solid #333', padding:'5px', fontSize:'12px', flex:1 },
-  testBtn: { background:'#333', color:'#777', border:'none', fontSize:'10px', padding:'5px', borderRadius:'4px' },
-  adminPanel: { background:'#13141f', padding:'10px', borderRadius:'8px', border:'1px solid #f0c040', marginBottom:'15px' },
-  adminInput: { background:'#000', color:'#fff', border:'1px solid #444', width:'50px', padding:'5px', borderRadius:'4px' },
-  btnAction: { background:'#f0c040', color:'#000', padding:'5px 12px', border:'none', borderRadius:'4px', fontWeight:'bold', cursor:'pointer' },
-  btnReset: { background:'rgba(255,61,90,0.1)', color:'#ff3d5a', border:'1px solid #ff3d5a', padding:'5px 10px', borderRadius:'4px', fontSize:'11px', fontWeight:'bold', cursor:'pointer' },
-  podiumContainer: { display: 'flex', justifyContent: 'center', alignItems: 'flex-end', gap: '8px', margin: '15px 0', height: '170px' },
-  pod: { flex: 1, background: '#13141f', border: '1px solid #252638', borderRadius: '8px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '5px' },
-  podMedal: { fontSize: '20px' },
-  podName: { fontWeight: 'bold', fontSize: '12px' },
-  podScore: { fontSize: '24px', color: '#f0c040', margin: '3px 0' },
-  table: { background: '#13141f', borderRadius: '8px', overflow: 'hidden' },
-  tableHeader: { display: 'flex', background: '#1a1b28', padding: '8px 5px', fontSize: '9px', color: '#52536e' },
-  tableRow: { display: 'flex', padding: '10px 5px', fontSize: '11px', borderBottom: '1px solid #252638', alignItems: 'center' },
+  container: { background: '#07080f', minHeight: '100vh', color: '#eee', paddingBottom: '50px' },
+  center: { height: '100vh', display: 'flex', justifyContent: 'center', alignItems: 'center', background: '#07080f', color: '#f0c040', fontSize: '24px', fontFamily: 'Bebas Neue' },
+  heroTitle: { fontSize: '48px', fontFamily: 'Bebas Neue', background: 'linear-gradient(135deg, #f0c040, #ff5f1f)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', marginBottom: '20px' },
+  authPage: { height: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' },
+  tabs: { display: 'flex', background: '#0e0f1a', padding: '5px', borderBottom: '1px solid #252638', marginBottom: '20px', position: 'sticky', top: 0, zIndex: 100 },
+  tabOn: { flex: 1, padding: '12px', background: '#ff5f1f', border: 'none', color: '#fff', fontWeight: 'bold', borderRadius: '4px', fontSize: '11px', letterSpacing: '1px' },
+  tabOff: { flex: 1, padding: '12px', background: 'transparent', border: 'none', color: '#52536e', fontSize: '11px', letterSpacing: '1px' },
+  matchCard: { background: '#13141f', padding: '18px', margin: '10px 0', borderRadius: '12px', border: '1px solid #252638', cursor: 'pointer', transition: '0.2s' },
+  matchHeader: { fontSize: '18px', textAlign: 'center', marginBottom: '20px', color: '#f0c040', fontFamily: 'Bebas Neue', letterSpacing: '1px' },
+  grid: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' },
+  cardComplex: { height: '80px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', borderRadius: '12px', cursor: 'pointer' },
+  cardNumber: { fontSize: '28px', fontFamily: 'Bebas Neue', color: '#000' },
+  cardFriend: { fontSize: '11px', fontWeight: 'bold', color: '#000', textTransform: 'uppercase' },
+  lockBadge: { background: 'rgba(255,61,90,0.1)', color: '#ff3d5a', fontSize: '10px', textAlign: 'center', padding: '6px', borderRadius: '100px', border: '1px solid #ff3d5a', marginBottom: '15px', fontWeight: 'bold', letterSpacing: '1px' },
+  adminPanel: { background:'#13141f', padding:'15px', borderRadius:'12px', border:'1px solid #f0c040', marginBottom:'20px' },
+  adminInput: { background:'#000', color:'#fff', border:'1px solid #333', width:'60px', padding:'8px', borderRadius:'6px', textAlign:'center', fontWeight:'bold' },
+  btnAction: { flex: 1, background:'#f0c040', color:'#000', padding:'10px', border:'none', borderRadius:'6px', fontWeight:'bold', fontSize:'11px' },
+  btnPrimary: { background: 'linear-gradient(135deg, #ff5f1f, #d44a0f)', color: 'white', padding: '15px 40px', border: 'none', borderRadius: '100px', fontWeight: 'bold', fontSize: '16px', cursor: 'pointer', boxShadow: '0 10px 20px rgba(255,95,31,0.3)' },
+  podiumContainer: { display: 'flex', justifyContent: 'center', alignItems: 'flex-end', gap: '10px', margin: '30px 0', height: '180px' },
+  pod: { flex: 1, background: '#13141f', border: '1px solid #252638', borderRadius: '16px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '10px' },
+  podName: { fontWeight: 'bold', fontSize: '13px', marginTop: '10px' },
+  podScore: { fontSize: '36px', color: '#f0c040', fontFamily: 'Bebas Neue', margin: '2px 0' },
+  table: { background: '#13141f', borderRadius: '16px', overflow: 'hidden', border: '1px solid #252638' },
+  tableHeader: { display: 'flex', background: '#1a1b28', padding: '12px 10px', fontSize: '10px', color: '#7a7b98', fontWeight: 'bold', letterSpacing: '1px' },
+  tableRow: { display: 'flex', padding: '15px 10px', fontSize: '13px', borderBottom: '1px solid #252638', alignItems: 'center' },
   colF: { flex: 1.5, fontWeight: 'bold' },
-  colInn: { flex: 3.5, fontSize: '10px' },
-  colR: { flex: 1, textAlign: 'center' },
-  colTot: { flex: 1, textAlign: 'center', fontWeight: 'bold' },
-  colNet: { flex: 1, textAlign: 'center', fontWeight: 'bold' }
+  colInn: { flex: 3 },
+  colR: { width: '40px', textAlign: 'center', fontWeight: 'bold' },
+  colTot: { width: '50px', textAlign: 'center', fontSize: '16px', fontFamily: 'Bebas Neue' },
+  btnReset: { background:'transparent', color:'#ff3d5a', border:'1px solid #ff3d5a', padding:'4px 10px', borderRadius:'4px', fontSize:'10px', fontWeight:'bold' },
+  testPanel: { background:'rgba(240,192,64,0.05)', padding:'10px', borderRadius:'8px', border:'1px dashed #f0c040', marginBottom:'15px', display:'flex', gap:'10px' },
+  testInput: { flex:1, background:'#000', color:'#fff', border:'1px solid #333', padding:'6px', borderRadius:'4px', fontSize:'12px' },
+  testBtn: { background:'#333', color:'#999', border:'none', padding:'0 10px', borderRadius:'4px', fontSize:'10px' }
 };
 
 export default App;
