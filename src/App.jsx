@@ -71,21 +71,30 @@ function App() {
         const data = await res.json();
         if (data.status === 'success' && data.data.scorecard) {
           const sc = data.data.scorecard;
-          // Extract short names or full names of teams
-          const t1Info = data.data.teamInfo?.find(t => t.name === data.data.teams[0]) || { shortname: data.data.teams[0] };
-          const t2Info = data.data.teamInfo?.find(t => t.name === data.data.teams[1]) || { shortname: data.data.teams[1] };
           
-          const parse = (inn, team) => (inn?.batting || []).slice(0, 9).map((b, i) => ({ 
-            pos: i + 1, 
-            team: team.shortname || team.name, 
-            name: b.batsman?.name || b.name || "Not Played", 
-            runs: b.r || 0 
-          }));
+          // STRICT TEAM MAPPING
+          // Using exact "inning" string from the API as the team name
+          const t1Name = sc[0]?.inning || "Team 1";
+          const t2Name = sc[1]?.inning || "Team 2";
 
-          const scores = { inn1: parse(sc[0], t1Info), inn2: parse(sc[1], t2Info), updatedAt: new Date() };
+          const parse = (inn, teamFullName) => {
+            return (inn?.batting || []).slice(0, 9).map((b, i) => ({ 
+              pos: i + 1, 
+              team: teamFullName, 
+              name: b.batsman?.name || b.name || "Not Played", 
+              runs: b.r || 0 
+            }));
+          };
+
+          const scores = { 
+            inn1: parse(sc[0], t1Name), 
+            inn2: parse(sc[1], t2Name), 
+            updatedAt: new Date() 
+          };
+          
           await setDoc(doc(db, "active_matches", selectedMatch.id), { scores }, { merge: true });
           setSelectedMatch({ ...selectedMatch, scores });
-          alert("Scorecard Fetched with Teams");
+          alert("Scorecard Fetched: Teams Mapped Strictly");
           return;
         }
       } catch (e) { console.error(e); }
@@ -116,7 +125,7 @@ function App() {
     }, { merge: true });
   };
 
-  if (loading) return <div style={styles.center}>Loading...</div>;
+  if (loading) return <div style={styles.center}>Loading IST...</div>;
 
   return (
     <div style={styles.container}>
@@ -160,7 +169,7 @@ function App() {
 
           {tab === 'my-satto' && selectedMatch && (
             <section>
-              {user.email === ADMIN_EMAIL && <button onClick={adminFetchScorecard} style={styles.btnAdmin}>Admin: Fetch Scorecard (API Hit)</button>}
+              {user.email === ADMIN_EMAIL && <button onClick={adminFetchScorecard} style={styles.btnAdmin}>Fetch Scorecard (Strict Team Sync)</button>}
               <div style={styles.table}>
                 <div style={styles.tableHeader}>
                   <div style={styles.colF}>Friend</div>
@@ -178,8 +187,18 @@ function App() {
                     <div key={p.userId} style={styles.tableRowGroup}>
                       <div style={styles.colF}>{p.userName.split(' ')[0]}</div>
                       <div style={styles.multiRowCol}>
-                        <div style={styles.subRow}><div style={styles.colT}>{s1?.team || '-'}</div><div style={styles.colN}>{p.inn1Num}</div><div style={styles.colP}>{s1?.name || 'Not Played'}</div><div style={styles.colR}>{s1?.runs || 0}</div></div>
-                        <div style={styles.subRow}><div style={styles.colT}>{s2?.team || '-'}</div><div style={styles.colN}>{p.inn2Num}</div><div style={styles.colP}>{s2?.name || 'Not Played'}</div><div style={styles.colR}>{s2?.runs || 0}</div></div>
+                        <div style={styles.subRow}>
+                          <div style={styles.colT}>{s1?.team || '-'}</div>
+                          <div style={styles.colN}>{p.inn1Num}</div>
+                          <div style={styles.colP}>{s1?.name || 'Not Played'}</div>
+                          <div style={styles.colR}>{s1?.runs || 0}</div>
+                        </div>
+                        <div style={styles.subRow}>
+                          <div style={styles.colT}>{s2?.team || '-'}</div>
+                          <div style={styles.colN}>{p.inn2Num}</div>
+                          <div style={styles.colP}>{s2?.name || 'Not Played'}</div>
+                          <div style={styles.colR}>{s2?.runs || 0}</div>
+                        </div>
                       </div>
                       <div style={styles.colTot}><b>{total}</b></div>
                     </div>
@@ -210,17 +229,17 @@ const styles = {
   cardBox: { height: '35px', display: 'flex', justifyContent: 'center', alignItems: 'center', borderRadius: '2px', border: '1px solid #333', fontSize: '10px' },
   btnPrimary: { background: '#ff5f1f', color: 'white', padding: '12px 25px', border: 'none', borderRadius: '4px' },
   btnAdmin: { width: '100%', background: '#f0c040', color: '#000', padding: '8px', border: 'none', borderRadius: '4px', fontWeight: 'bold', marginBottom: '10px' },
-  table: { border: '1px solid #000', background: '#fff', color: '#000', fontSize: '10px' },
+  table: { border: '1px solid #000', background: '#fff', color: '#000', fontSize: '9px' },
   tableHeader: { display: 'flex', background: '#000', color: '#fff', fontWeight: 'bold', textAlign: 'center', padding: '4px 0' },
   tableRowGroup: { display: 'flex', borderBottom: '1px solid #000', alignItems: 'stretch' },
   multiRowCol: { flex: 1, display: 'flex', flexDirection: 'column', borderLeft: '1px solid #000', borderRight: '1px solid #000' },
   subRow: { display: 'flex', borderBottom: '1px solid #000' },
-  colF: { width: '35px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', borderRight: '1px solid #000' },
-  colT: { width: '35px', borderRight: '1px solid #000', textAlign: 'center', padding: '3px 0' },
+  colF: { width: '35px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', borderRight: '1px solid #000', background: '#f9f9f9' },
+  colT: { width: '55px', borderRight: '1px solid #000', textAlign: 'center', padding: '3px 0', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' },
   colN: { width: '25px', borderRight: '1px solid #000', textAlign: 'center', padding: '3px 0' },
   colP: { flex: 1, borderRight: '1px solid #000', padding: '3px 5px', overflow: 'hidden', whiteSpace: 'nowrap' },
   colR: { width: '25px', textAlign: 'center', padding: '3px 0' },
-  colTot: { width: '35px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px' },
+  colTot: { width: '35px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px', background: '#f9f9f9' },
   friendRow: { display: 'flex', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid #222' }
 };
 
