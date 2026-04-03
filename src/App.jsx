@@ -230,7 +230,7 @@ function App() {
       {!user ? (
         <div style={styles.authPage}>
             <h1 style={styles.heroTitle}>ટ્રાફિકવાળાનો સટ્ટો</h1>
-            <button onClick={loginWithGoogle} style={styles.btnPrimary}>Enter Arena</button>
+            <button onClick={loginWithGoogle} style={styles.btnPrimary}>Login to Enter</button>
         </div>
       ) : (
         <>
