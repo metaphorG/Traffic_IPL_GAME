@@ -6,7 +6,6 @@ import { doc, setDoc, getDoc, collection, query, getDocs, where, serverTimestamp
 const CRIC_KEYS = ["c3c5ad69-4ca5-44b0-8313-1fc4362ed806", "eb4fcb6b-a26b-4594-9893-28412197c556", "64dcc6e7-c783-414b-9047-6abb463edec0", "d009046b-65c7-4ff3-abad-3e0a7f0574ca"];
 const IPL_SERIES_ID = "87c62aac-bc3c-4738-ab93-19da0690488f";
 const ADMIN_EMAIL = "dhavalranavasiya@gmail.com";
-const PULL = 20;
 
 function App() {
   const [user, setUser] = useState(null);
@@ -57,7 +56,7 @@ function App() {
           const list = (data.data.matchList || []);
           await setDoc(doc(db, "system", "match_cache"), { list, updatedAt: serverTimestamp() });
           setMatches(list);
-          alert("API Hit: Matches Updated");
+          alert("Matches Updated");
           return;
         }
       } catch (e) { console.error(e); }
@@ -72,15 +71,15 @@ function App() {
         const data = await res.json();
         if (data.status === 'success' && data.data.scorecard) {
           const sc = data.data.scorecard;
-          const parse = (inn) => (inn?.batting || []).slice(0, 9).map((b, i) => ({ 
-            pos: i + 1, 
-            name: b.batsman?.name || b.name || `Player ${i+1}`,
-            runs: b.r || 0 
+          const t1 = data.data.teams[0];
+          const t2 = data.data.teams[1];
+          const parse = (inn, teamName) => (inn?.batting || []).slice(0, 9).map((b, i) => ({ 
+            pos: i + 1, team: teamName, name: b.batsman?.name || b.name || "Not Played", runs: b.r || 0 
           }));
-          const scores = { inn1: parse(sc[0]), inn2: parse(sc[1]), status: data.data.status, updatedAt: new Date() };
+          const scores = { inn1: parse(sc[0], t1), inn2: parse(sc[1], t2), updatedAt: new Date() };
           await setDoc(doc(db, "active_matches", selectedMatch.id), { scores }, { merge: true });
           setSelectedMatch({ ...selectedMatch, scores });
-          alert("API Hit: Scorecard Updated");
+          alert("Scorecard Fetched");
           return;
         }
       } catch (e) { console.error(e); }
@@ -111,14 +110,12 @@ function App() {
     }, { merge: true });
   };
 
-  const mySelection = allPicks.find(p => p.userId === user.uid);
-
-  if (loading) return <div style={styles.center}>Loading IST...</div>;
+  if (loading) return <div style={styles.center}>Loading...</div>;
 
   return (
     <div style={styles.container}>
       {!user ? (
-        <div style={styles.authPage}><button onClick={loginWithGoogle} style={styles.btnPrimary}>Login with Google</button></div>
+        <div style={styles.authPage}><button onClick={loginWithGoogle} style={styles.btnPrimary}>Login</button></div>
       ) : (
         <>
           <nav style={styles.tabs}>
@@ -130,28 +127,26 @@ function App() {
 
           {tab === 'matches' && (
             <section>
-              {user.email === ADMIN_EMAIL && <button onClick={adminFetchMatches} style={styles.btnAdmin}>ADMIN: Refresh Match List (API Hit)</button>}
+              {user.email === ADMIN_EMAIL && <button onClick={adminFetchMatches} style={styles.btnAdmin}>Refresh Match List (API)</button>}
               {matches.slice(0,10).map(m => (
-                <div key={m.id} onClick={() => handleSelectMatch(m)} style={styles.matchCard}>
-                  <b>{m.name}</b><br/><small>{formatIST(m.dateTimeGMT)}</small>
-                </div>
+                <div key={m.id} onClick={() => handleSelectMatch(m)} style={styles.matchCard}><b>{m.name}</b><br/><small>{formatIST(m.dateTimeGMT)}</small></div>
               ))}
             </section>
           )}
 
           {tab === 'play' && selectedMatch && (
             <section>
-              <h3>{selectedMatch.name}</h3>
+              <h3 style={{marginBottom:'10px'}}>{selectedMatch.name}</h3>
               <div style={styles.grid}>
                 {[...Array(9)].map((_, i) => {
                   const p = allPicks.find(x => x.inn1Card === i);
-                  return <div key={i} onClick={() => !p && lockCard(1, i)} style={{...styles.card, background: p?.userId === user.uid ? '#1fd18a' : p ? '#333' : '#13141f'}}>{p?.userId === user.uid ? `#${p.inn1Num}` : p ? "✖" : "🟢"}</div>
+                  return <div key={i} onClick={() => !p && lockCard(1, i)} style={{...styles.cardBox, background: p?.userId === user.uid ? '#1fd18a' : p ? '#333' : '#13141f'}}>{p?.userId === user.uid ? `#${p.inn1Num}` : p ? "✖" : "🟢"}</div>
                 })}
               </div>
               <div style={{...styles.grid, marginTop:'10px'}}>
                 {[...Array(9)].map((_, i) => {
                   const p = allPicks.find(x => x.inn2Card === i);
-                  return <div key={i} onClick={() => !p && lockCard(2, i)} style={{...styles.card, background: p?.userId === user.uid ? '#ff3d5a' : p ? '#333' : '#13141f'}}>{p?.userId === user.uid ? `#${p.inn2Num}` : p ? "✖" : "🔴"}</div>
+                  return <div key={i} onClick={() => !p && lockCard(2, i)} style={{...styles.cardBox, background: p?.userId === user.uid ? '#ff3d5a' : p ? '#333' : '#13141f'}}>{p?.userId === user.uid ? `#${p.inn2Num}` : p ? "✖" : "🔴"}</div>
                 })}
               </div>
             </section>
@@ -159,66 +154,39 @@ function App() {
 
           {tab === 'my-satto' && selectedMatch && (
             <section>
-              <div style={styles.cardBox}>
-                <h3>{selectedMatch.name} - My Details</h3>
-                {mySelection ? (
-                  <div style={{marginTop: '10px'}}>
-                    <div style={styles.detailRow}>
-                      <span>Innings 1 Player (#{mySelection.inn1Num}):</span>
-                      <b style={{color: '#1fd18a'}}>{selectedMatch.scores?.inn1?.find(s => s.pos === mySelection.inn1Num)?.name || 'TBD'}</b>
-                    </div>
-                    <div style={styles.detailRow}>
-                      <span>Runs Scored:</span>
-                      <b>{selectedMatch.scores?.inn1?.find(s => s.pos === mySelection.inn1Num)?.runs || 0}</b>
-                    </div>
-                    <div style={{...styles.detailRow, marginTop: '10px'}}>
-                      <span>Innings 2 Player (#{mySelection.inn2Num}):</span>
-                      <b style={{color: '#ff3d5a'}}>{selectedMatch.scores?.inn2?.find(s => s.pos === mySelection.inn2Num)?.name || 'TBD'}</b>
-                    </div>
-                    <div style={styles.detailRow}>
-                      <span>Runs Scored:</span>
-                      <b>{selectedMatch.scores?.inn2?.find(s => s.pos === mySelection.inn2Num)?.runs || 0}</b>
-                    </div>
-                    <div style={{...styles.detailRow, borderTop: '1px solid #333', paddingTop: '10px', marginTop: '10px'}}>
-                      <span>Total Match Runs:</span>
-                      <b style={{color: '#f0c040', fontSize: '18px'}}>
-                        {(selectedMatch.scores?.inn1?.find(s => s.pos === mySelection.inn1Num)?.runs || 0) + 
-                         (selectedMatch.scores?.inn2?.find(s => s.pos === mySelection.inn2Num)?.runs || 0)}
-                      </b>
-                    </div>
-                  </div>
-                ) : <p>You haven't picked cards for this match yet.</p>}
-              </div>
-
-              <div style={{...styles.cardBox, marginTop: '20px'}}>
-                <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
-                   <h4>Friend Rankings</h4>
-                   {user.email === ADMIN_EMAIL && <button onClick={adminFetchScorecard} style={styles.btnSmallGold}>Admin Fetch Scorecard</button>}
+              {user.email === ADMIN_EMAIL && <button onClick={adminFetchScorecard} style={styles.btnAdmin}>Fetch Scorecard (API)</button>}
+              <div style={styles.table}>
+                <div style={styles.tableHeader}>
+                  <div style={styles.colF}>Friend</div>
+                  <div style={styles.colT}>Team</div>
+                  <div style={styles.colN}>NO.</div>
+                  <div style={styles.colP}>Player</div>
+                  <div style={styles.colR}>Run</div>
+                  <div style={styles.colTot}>Total</div>
                 </div>
                 {allPicks.map(p => {
-                  const r1 = selectedMatch.scores?.inn1?.find(s => s.pos === p.inn1Num)?.runs || 0;
-                  const r2 = selectedMatch.scores?.inn2?.find(s => s.pos === p.inn2Num)?.runs || 0;
-                  return { ...p, total: r1 + r2 };
-                }).sort((a,b) => b.total - a.total).map((p, i) => (
-                  <div key={i} style={styles.friendRow}>
-                    <span>{i+1}. {p.userName} {p.userId === user.uid ? '(You)' : ''}</span>
-                    <b>{p.total} Runs</b>
-                  </div>
-                ))}
+                  const s1 = selectedMatch.scores?.inn1?.find(s => s.pos === p.inn1Num);
+                  const s2 = selectedMatch.scores?.inn2?.find(s => s.pos === p.inn2Num);
+                  const total = (s1?.runs || 0) + (s2?.runs || 0);
+                  return (
+                    <div key={p.userId} style={styles.tableRowGroup}>
+                      <div style={styles.colF}>{p.userName.split(' ')[0]}</div>
+                      <div style={styles.multiRowCol}>
+                        <div style={styles.subRow}><div style={styles.colT}>{s1?.team || '-'}</div><div style={styles.colN}>{p.inn1Num}</div><div style={styles.colP}>{s1?.name || '-'}</div><div style={styles.colR}>{s1?.runs || 0}</div></div>
+                        <div style={styles.subRow}><div style={styles.colT}>{s2?.team || '-'}</div><div style={styles.colN}>{p.inn2Num}</div><div style={styles.colP}>{s2?.name || '-'}</div><div style={styles.colR}>{s2?.runs || 0}</div></div>
+                      </div>
+                      <div style={styles.colTot}><b>{total}</b></div>
+                    </div>
+                  );
+                })}
               </div>
             </section>
           )}
 
           {tab === 'season' && (
-            <section>
-              <h3>Leaderboard</h3>
-              {leaderboard.map((u, i) => <div key={i} style={styles.friendRow}><span>{u.name}</span><b>{u.totalPoints || 0}</b></div>)}
-            </section>
+            <section><h3>Leaderboard</h3>{leaderboard.map((u, i) => <div key={i} style={styles.friendRow}><span>{u.name}</span><b>{u.totalPoints || 0}</b></div>)}</section>
           )}
-
-          <div style={{textAlign:'center', marginTop:'30px'}}>
-            <button onClick={logout} style={{color:'#ff3d5a', background:'none', border:'none', fontSize:'12px', cursor:'pointer'}}>Sign Out</button>
-          </div>
+          <div style={{textAlign:'center', marginTop:'20px'}}><button onClick={logout} style={{color:'#ff3d5a', background:'none', border:'none', cursor:'pointer'}}>Logout</button></div>
         </>
       )}
     </div>
@@ -226,21 +194,29 @@ function App() {
 }
 
 const styles = {
-  container: { background: '#07080f', minHeight: '100vh', color: '#eee', padding: '15px', fontFamily: 'sans-serif' },
+  container: { background: '#07080f', minHeight: '100vh', color: '#eee', padding: '10px', fontFamily: 'sans-serif' },
   center: { height: '100vh', display: 'flex', justifyContent: 'center', alignItems: 'center', background: '#07080f', color: 'white' },
   authPage: { height: '100vh', display: 'flex', justifyContent: 'center', alignItems: 'center' },
-  tabs: { display: 'flex', gap: '5px', marginBottom: '20px', borderBottom: '1px solid #252638' },
-  tabOn: { flex: 1, padding: '10px', background: '#ff5f1f', border: 'none', color: 'white', fontWeight: 'bold', borderRadius: '4px 4px 0 0' },
-  tabOff: { flex: 1, padding: '10px', background: '#13141f', border: 'none', color: '#777', borderRadius: '4px 4px 0 0' },
-  matchCard: { background: '#13141f', padding: '15px', margin: '10px 0', borderRadius: '8px', border: '1px solid #252638', cursor: 'pointer' },
-  grid: { display: 'grid', gridTemplateColumns: 'repeat(9, 1fr)', gap: '5px' },
-  card: { height: '35px', display: 'flex', justifyContent: 'center', alignItems: 'center', borderRadius: '4px', border: '1px solid #333', fontSize: '11px', fontWeight: 'bold' },
-  btnPrimary: { background: '#ff5f1f', color: 'white', padding: '15px 30px', border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer' },
-  btnAdmin: { width: '100%', background: '#f0c040', color: '#000', padding: '10px', border: 'none', borderRadius: '5px', fontWeight: 'bold', marginBottom: '15px', cursor: 'pointer' },
-  btnSmallGold: { background: '#f0c040', color: '#000', border: 'none', padding: '5px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '10px', fontWeight: 'bold' },
-  friendRow: { display: 'flex', justifyContent: 'space-between', padding: '12px 0', borderBottom: '1px solid #222', fontSize: '14px' },
-  detailRow: { display: 'flex', justifyContent: 'space-between', padding: '5px 0', fontSize: '13px' },
-  cardBox: { background: '#13141f', padding: '20px', borderRadius: '12px', border: '1px solid #252638' }
+  tabs: { display: 'flex', gap: '2px', marginBottom: '15px' },
+  tabOn: { flex: 1, padding: '10px', background: '#ff5f1f', border: 'none', color: 'white', fontWeight: 'bold' },
+  tabOff: { flex: 1, padding: '10px', background: '#13141f', border: 'none', color: '#777' },
+  matchCard: { background: '#13141f', padding: '12px', margin: '5px 0', borderRadius: '4px', border: '1px solid #252638' },
+  grid: { display: 'grid', gridTemplateColumns: 'repeat(9, 1fr)', gap: '3px' },
+  cardBox: { height: '35px', display: 'flex', justifyContent: 'center', alignItems: 'center', borderRadius: '2px', border: '1px solid #333', fontSize: '12px' },
+  btnPrimary: { background: '#ff5f1f', color: 'white', padding: '12px 25px', border: 'none', borderRadius: '4px' },
+  btnAdmin: { width: '100%', background: '#f0c040', color: '#000', padding: '8px', border: 'none', borderRadius: '4px', fontWeight: 'bold', marginBottom: '10px' },
+  table: { border: '1px solid #444', background: '#fff', color: '#000', fontSize: '11px' },
+  tableHeader: { display: 'flex', background: '#000', color: '#fff', fontWeight: 'bold', textAlign: 'center', padding: '4px 0' },
+  tableRowGroup: { display: 'flex', borderBottom: '1px solid #000', alignItems: 'stretch' },
+  multiRowCol: { flex: 1, display: 'flex', flexDirection: 'column', borderLeft: '1px solid #000', borderRight: '1px solid #000' },
+  subRow: { display: 'flex', borderBottom: '1px solid #000' },
+  colF: { width: '40px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', padding: '2px' },
+  colT: { width: '40px', borderRight: '1px solid #000', padding: '2px', textAlign: 'center' },
+  colN: { width: '30px', borderRight: '1px solid #000', padding: '2px', textAlign: 'center' },
+  colP: { flex: 1, borderRight: '1px solid #000', padding: '2px 5px' },
+  colR: { width: '30px', padding: '2px', textAlign: 'center' },
+  colTot: { width: '40px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px' },
+  friendRow: { display: 'flex', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid #222' }
 };
 
 export default App;
