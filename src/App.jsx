@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { auth, db, loginWithGoogle, logout } from './firebase';
 import { onAuthStateChanged } from 'firebase/auth';
-import { doc, setDoc, getDoc, collection, query, getDocs, where, serverTimestamp, onSnapshot } from 'firebase/firestore';
+import { doc, setDoc, getDoc, collection, query, getDocs, where, serverTimestamp, onSnapshot, increment } from 'firebase/firestore';
 
 const CRIC_KEYS = ["c3c5ad69-4ca5-44b0-8313-1fc4362ed806", "eb4fcb6b-a26b-4594-9893-28412197c556", "64dcc6e7-c783-414b-9047-6abb463edec0", "d009046b-65c7-4ff3-abad-3e0a7f0574ca"];
 const IPL_SERIES_ID = "87c62aac-bc3c-4738-ab93-19da0690488f";
@@ -74,11 +74,9 @@ function App() {
           const sc = data.data.scorecard;
           const t1Name = sc[0]?.inning || "Team 1";
           const t2Name = sc[1]?.inning || "Team 2";
-
           const parse = (inn, teamFullName) => (inn?.batting || []).slice(0, 9).map((b, i) => ({ 
             pos: i + 1, team: teamFullName, name: b.batsman?.name || b.name || "Not Played", runs: b.r || 0 
           }));
-
           const scores = { inn1: parse(sc[0], t1Name), inn2: parse(sc[1], t2Name), updatedAt: new Date() };
           await setDoc(doc(db, "active_matches", selectedMatch.id), { scores }, { merge: true });
           setSelectedMatch({ ...selectedMatch, scores });
@@ -87,6 +85,70 @@ function App() {
         }
       } catch (e) { console.error(e); }
     }
+  };
+
+  const calculateFinalPoints = () => {
+    if (!selectedMatch?.scores || allPicks.length === 0) return [];
+
+    let results = allPicks.map(p => {
+      const s1 = selectedMatch.scores.inn1.find(s => s.pos === p.inn1Num);
+      const s2 = selectedMatch.scores.inn2.find(s => s.pos === p.inn2Num);
+      return { 
+        ...p, 
+        p1Name: s1?.name || "TBD", p2Name: s2?.name || "TBD",
+        p1Team: s1?.team || "-", p2Team: s2?.team || "-",
+        r1: s1?.runs || 0, r2: s2?.runs || 0, total: (s1?.runs || 0) + (s2?.runs || 0) 
+      };
+    }).sort((a,b) => b.total - a.total);
+
+    const pot = allPicks.length * PULL;
+    const remPot = pot - PULL; // After 3rd place receives pull back
+    const p1Amt = Math.round(remPot * 0.6);
+    const p2Amt = Math.round(remPot * 0.4);
+
+    // Split-Pot Logic for Ties
+    let rank = 0;
+    while (rank < results.length) {
+      let tieGroup = results.filter(r => r.total === results[rank].total);
+      let count = tieGroup.length;
+      let startPos = rank;
+      
+      tieGroup.forEach(r => {
+        if (startPos === 0) { // 1st Place Tie
+          if (count === 1) r.net = p1Amt - PULL;
+          else if (count === 2) r.net = Math.round((p1Amt + p2Amt) / 2) - PULL;
+          else r.net = Math.round((p1Amt + p2Amt + PULL) / count) - PULL;
+        } else if (startPos === 1) { // 2nd Place Tie
+          if (count === 1) r.net = p2Amt - PULL;
+          else r.net = Math.round((p2Amt + PULL) / count) - PULL;
+        } else if (startPos === 2) { // 3rd Place Tie
+          r.net = count === 1 ? 0 : -PULL; // Only one 3rd place gets pull back
+        } else {
+          r.net = -PULL;
+        }
+      });
+      rank += count;
+    }
+    return results;
+  };
+
+  const finalRankings = calculateFinalPoints();
+
+  // ADMIN: Submit results to Season Leaderboard
+  const submitToSeason = async () => {
+    if (user.email !== ADMIN_EMAIL || !selectedMatch?.scores) return;
+    if (!window.confirm("Submit these results to the Season Leaderboard?")) return;
+
+    for (let r of finalRankings) {
+      const userRef = doc(db, "users", r.userId);
+      await setDoc(userRef, { 
+        name: r.userName, 
+        totalPoints: increment(r.net) 
+      }, { merge: true });
+    }
+    await setDoc(doc(db, "active_matches", selectedMatch.id), { settled: true }, { merge: true });
+    alert("Season Points Updated!");
+    loadLeaderboard();
   };
 
   const handleSelectMatch = async (m) => {
@@ -113,37 +175,6 @@ function App() {
     }, { merge: true });
   };
 
-  const calculateFinalPoints = () => {
-    if (!selectedMatch?.scores || allPicks.length === 0) return [];
-
-    let results = allPicks.map(p => {
-      const s1 = selectedMatch.scores.inn1.find(s => s.pos === p.inn1Num);
-      const s2 = selectedMatch.scores.inn2.find(s => s.pos === p.inn2Num);
-      return { 
-        ...p, 
-        p1Name: s1?.name || "TBD",
-        p2Name: s2?.name || "TBD",
-        r1: s1?.runs || 0, 
-        r2: s2?.runs || 0, 
-        total: (s1?.runs || 0) + (s2?.runs || 0) 
-      };
-    }).sort((a,b) => b.total - a.total);
-
-    const pot = allPicks.length * PULL;
-    const remainingPot = pot - PULL;
-
-    results.forEach((r, i) => {
-      if (i === 0) r.net = Math.round(remainingPot * 0.6) - PULL;
-      else if (i === 1) r.net = Math.round(remainingPot * 0.4) - PULL;
-      else if (i === 2) r.net = 0;
-      else r.net = -PULL;
-    });
-
-    return results;
-  };
-
-  const finalRankings = calculateFinalPoints();
-
   if (loading) return <div style={styles.center}>Loading...</div>;
 
   return (
@@ -155,7 +186,7 @@ function App() {
           <nav style={styles.tabs}>
             <button onClick={() => setTab('matches')} style={tab === 'matches' ? styles.tabOn : styles.tabOff}>Matches</button>
             <button onClick={() => setTab('play')} style={tab === 'play' ? styles.tabOn : styles.tabOff} disabled={!selectedMatch}>Play</button>
-            <button onClick={() => setTab('my-satto')} style={tab === 'my-satto' ? styles.tabOn : styles.tabOff} disabled={!selectedMatch}>Results</button>
+            <button onClick={() => setTab('results')} style={tab === 'results' ? styles.tabOn : styles.tabOff} disabled={!selectedMatch}>Results</button>
             <button onClick={() => setTab('season')} style={tab === 'season' ? styles.tabOn : styles.tabOff}>Season</button>
           </nav>
 
@@ -186,9 +217,14 @@ function App() {
             </section>
           )}
 
-          {tab === 'my-satto' && selectedMatch && (
+          {tab === 'results' && selectedMatch && (
             <section>
-              {user.email === ADMIN_EMAIL && <button onClick={adminFetchScorecard} style={styles.btnAdmin}>Fetch Scorecard (API)</button>}
+              {user.email === ADMIN_EMAIL && (
+                <div style={{display:'flex', gap:'5px'}}>
+                  <button onClick={adminFetchScorecard} style={styles.btnAdmin}>Fetch Scorecard (API)</button>
+                  <button onClick={submitToSeason} style={{...styles.btnAdmin, background:'#1fd18a'}}>Final Submit to Season</button>
+                </div>
+              )}
               
               <div style={styles.podiumContainer}>
                 {finalRankings.slice(0, 3).map((r, i) => (
@@ -196,7 +232,7 @@ function App() {
                     <div style={styles.podMedal}>{i === 0 ? '🥇' : i === 1 ? '🥈' : '🥉'}</div>
                     <div style={styles.podName}>{r.userName.split(' ')[0]}</div>
                     <div style={styles.podScore}>{r.total}</div>
-                    <div style={{color: r.net >= 0 ? '#1fd18a' : '#ff3d5a', fontSize: '12px'}}>{r.net > 0 ? '+' : ''}{r.net} pts</div>
+                    <div style={{color: r.net >= 0 ? '#1fd18a' : '#ff3d5a', fontSize: '11px'}}>{r.net > 0 ? '+' : ''}{r.net} pts</div>
                   </div>
                 ))}
               </div>
@@ -209,22 +245,16 @@ function App() {
                   <div style={styles.colInn}>{selectedMatch.scores?.inn2?.[0]?.team || "TEAM 2"}</div>
                   <div style={styles.colR}>RUNS</div>
                   <div style={styles.colTot}>TOTAL</div>
-                  <div style={styles.colNet}>NET PTS</div>
+                  <div style={styles.colNet}>NET</div>
                 </div>
                 {finalRankings.map((p, i) => (
                   <div key={i} style={styles.tableRow}>
                     <div style={styles.colF}>{p.userName.split(' ')[0]}</div>
-                    <div style={styles.colInn}>
-                        <span style={{color:'#1fd18a', fontWeight:'bold'}}>#{p.inn1Num}</span> 
-                        <span style={{marginLeft:'5px', color:'#7a7b98'}}>{p.p1Name}</span>
-                    </div>
+                    <div style={styles.colInn}><span style={{color:'#1fd18a'}}>#{p.inn1Num}</span> {p.p1Name}</div>
                     <div style={styles.colR}>{p.r1}</div>
-                    <div style={styles.colInn}>
-                        <span style={{color:'#ff3d5a', fontWeight:'bold'}}>#{p.inn2Num}</span> 
-                        <span style={{marginLeft:'5px', color:'#7a7b98'}}>{p.p2Name}</span>
-                    </div>
+                    <div style={styles.colInn}><span style={{color:'#ff3d5a'}}>#{p.inn2Num}</span> {p.p2Name}</div>
                     <div style={styles.colR}>{p.r2}</div>
-                    <div style={{...styles.colTot, color:'#f0c040'}}><b>{p.total}</b></div>
+                    <div style={{...styles.colTot, color:'#f0c040'}}>{p.total}</div>
                     <div style={{...styles.colNet, color: p.net > 0 ? '#1fd18a' : p.net === 0 ? '#777' : '#ff3d5a'}}>{p.net > 0 ? '+' : ''}{p.net}</div>
                   </div>
                 ))}
@@ -233,7 +263,25 @@ function App() {
           )}
 
           {tab === 'season' && (
-            <section><h3>Leaderboard</h3>{leaderboard.map((u, i) => <div key={i} style={styles.friendRow}><span>{u.name}</span><b>{u.totalPoints || 0}</b></div>)}</section>
+            <section>
+              <h3 style={{marginBottom:'15px'}}>Season Points Table</h3>
+              <div style={styles.table}>
+                <div style={{...styles.tableHeader, background:'#000'}}>
+                  <div style={{flex:1, paddingLeft:'15px'}}>RANK</div>
+                  <div style={{flex:3}}>FRIEND</div>
+                  <div style={{flex:2, textAlign:'right', paddingRight:'15px'}}>TOTAL POINTS</div>
+                </div>
+                {leaderboard.map((u, i) => (
+                  <div key={i} style={{...styles.tableRow, background: i % 2 === 0 ? '#13141f' : '#1a1b28'}}>
+                    <div style={{flex:1, paddingLeft:'15px'}}>{i+1}</div>
+                    <div style={{flex:3, fontWeight:'bold'}}>{u.name}</div>
+                    <div style={{flex:2, textAlign:'right', paddingRight:'15px', color: u.totalPoints >= 0 ? '#1fd18a' : '#ff3d5a'}}>
+                      {u.totalPoints > 0 ? '+' : ''}{u.totalPoints}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
           )}
         </>
       )}
@@ -250,21 +298,21 @@ const styles = {
   tabOff: { flex: 1, padding: '10px', background: '#13141f', border: 'none', color: '#777' },
   matchCard: { background: '#13141f', padding: '12px', margin: '5px 0', borderRadius: '4px', border: '1px solid #252638' },
   grid: { display: 'grid', gridTemplateColumns: 'repeat(9, 1fr)', gap: '3px' },
-  cardSmall: { height: '35px', display: 'flex', justifyContent: 'center', alignItems: 'center', borderRadius: '2px', border: '1px solid #333', fontSize: '10px' },
+  cardSmall: { height: '35px', display: 'flex', justifyContent: 'center', alignItems: 'center', borderRadius: '2px', border: '1px solid #333', fontSize: '9px' },
   btnPrimary: { background: '#ff5f1f', color: 'white', padding: '12px 25px', border: 'none', borderRadius: '4px' },
-  btnAdmin: { width: '100%', background: '#f0c040', color: '#000', padding: '8px', border: 'none', borderRadius: '4px', fontWeight: 'bold', marginBottom: '10px' },
-  podiumContainer: { display: 'flex', justifyContent: 'center', alignItems: 'flex-end', gap: '10px', margin: '20px 0', height: '180px' },
-  pod: { flex: 1, background: '#13141f', border: '1px solid #252638', borderRadius: '8px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '10px' },
-  podMedal: { fontSize: '24px', marginBottom: '5px' },
-  podName: { fontWeight: 'bold', fontSize: '14px' },
-  podScore: { fontSize: '28px', color: '#f0c040', margin: '5px 0' },
-  table: { background: '#13141f', borderRadius: '8px', overflow: 'hidden', marginTop: '20px' },
-  tableHeader: { display: 'flex', background: '#1a1b28', padding: '10px 5px', fontSize: '10px', color: '#52536e', borderBottom: '1px solid #252638' },
-  tableRow: { display: 'flex', padding: '12px 5px', fontSize: '12px', borderBottom: '1px solid #252638', alignItems: 'center' },
+  btnAdmin: { flex:1, background: '#f0c040', color: '#000', padding: '8px', border: 'none', borderRadius: '4px', fontWeight: 'bold', marginBottom: '10px' },
+  podiumContainer: { display: 'flex', justifyContent: 'center', alignItems: 'flex-end', gap: '8px', margin: '15px 0', height: '170px' },
+  pod: { flex: 1, background: '#13141f', border: '1px solid #252638', borderRadius: '8px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '5px' },
+  podMedal: { fontSize: '20px' },
+  podName: { fontWeight: 'bold', fontSize: '12px' },
+  podScore: { fontSize: '24px', color: '#f0c040', margin: '3px 0' },
+  table: { background: '#13141f', borderRadius: '8px', overflow: 'hidden' },
+  tableHeader: { display: 'flex', background: '#1a1b28', padding: '8px 5px', fontSize: '9px', color: '#52536e' },
+  tableRow: { display: 'flex', padding: '10px 5px', fontSize: '11px', borderBottom: '1px solid #252638', alignItems: 'center' },
   colF: { flex: 1.5, fontWeight: 'bold' },
-  colInn: { flex: 3, fontSize: '11px' },
+  colInn: { flex: 3, fontSize: '10px' },
   colR: { flex: 1, textAlign: 'center' },
-  colTot: { flex: 1, textAlign: 'center' },
+  colTot: { flex: 1, textAlign: 'center', fontWeight: 'bold' },
   colNet: { flex: 1, textAlign: 'center', fontWeight: 'bold' },
   friendRow: { display: 'flex', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid #222' }
 };
