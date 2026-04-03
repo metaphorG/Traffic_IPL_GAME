@@ -17,8 +17,6 @@ function App() {
   const [leaderboard, setLeaderboard] = useState([]);
   const [loading, setLoading] = useState(true);
   const [adminPull, setAdminPull] = useState(20);
-
-  // TEST MODE STATE
   const [testName, setTestName] = useState(""); 
 
   useEffect(() => {
@@ -92,13 +90,11 @@ function App() {
 
   const calculateFinalPoints = () => {
     if (!selectedMatch?.scores || allPicks.length === 0) return [];
-
     let results = allPicks.map(p => {
       const s1 = selectedMatch.scores.inn1.find(s => s.pos === p.inn1Num);
       const s2 = selectedMatch.scores.inn2.find(s => s.pos === p.inn2Num);
       return { 
-        ...p, 
-        p1Name: s1?.name || "TBD", p2Name: s2?.name || "TBD",
+        ...p, p1Name: s1?.name || "TBD", p2Name: s2?.name || "TBD",
         r1: s1?.runs || 0, r2: s2?.runs || 0, total: (s1?.runs || 0) + (s2?.runs || 0) 
       };
     }).sort((a,b) => b.total - a.total);
@@ -114,7 +110,6 @@ function App() {
       let tieGroup = results.filter(r => r.total === results[rank].total);
       let count = tieGroup.length;
       let startPos = rank;
-      
       tieGroup.forEach(r => {
         if (startPos === 0) {
           if (count === 1) r.net = p1Amt - adminPull;
@@ -123,11 +118,8 @@ function App() {
         } else if (startPos === 1) {
           if (count === 1) r.net = p2Amt - adminPull;
           else r.net = Math.round((p2Amt + adminPull) / count) - adminPull;
-        } else if (startPos === 2) {
-          r.net = count === 1 ? 0 : -adminPull;
-        } else {
-          r.net = -adminPull;
-        }
+        } else if (startPos === 2) r.net = count === 1 ? 0 : -adminPull;
+        else r.net = -adminPull;
       });
       rank += count;
     }
@@ -138,8 +130,7 @@ function App() {
 
   const submitToSeason = async () => {
     if (user.email !== ADMIN_EMAIL || !selectedMatch?.scores) return;
-    if (!window.confirm(`Submit results to Season with Pull: ${adminPull}?`)) return;
-
+    if (!window.confirm(`Submit results with Pull: ${adminPull}?`)) return;
     for (let r of finalRankings) {
       await setDoc(doc(db, "users", r.userId), { name: r.userName, totalPoints: increment(r.net) }, { merge: true });
     }
@@ -164,10 +155,8 @@ function App() {
   };
 
   const lockCard = async (inn, idx) => {
-    // Determine effective identity
     const effectiveUID = testName ? `test_${testName.replace(/\s/g, '_')}` : user.uid;
     const effectiveName = testName || user.displayName;
-
     const myExisting = allPicks.find(p => p.userId === effectiveUID);
     if (myExisting && myExisting[`inn${inn}Card`] !== undefined) return;
     if (allPicks.some(p => p[`inn${inn}Card`] === idx)) return alert("Taken!");
@@ -205,7 +194,6 @@ function App() {
 
           {tab === 'play' && selectedMatch && (
             <section>
-              {/* ADMIN TEST MODE UI */}
               {user.email === ADMIN_EMAIL && (
                 <div style={styles.testPanel}>
                   <span style={{fontSize:'11px', color:'#f0c040'}}>🧪 TEST MODE: Pick as:</span>
@@ -214,19 +202,39 @@ function App() {
                 </div>
               )}
 
-              <h3 style={{marginBottom:'10px'}}>{selectedMatch.name}</h3>
+              <h3 style={{marginBottom:'15px', fontSize:'14px'}}>{selectedMatch.name}</h3>
+              
               <div style={styles.grid}>
                 {[...Array(9)].map((_, i) => {
                   const p = allPicks.find(x => x.inn1Card === i);
-                  const isEffectiveMe = p?.userId === (testName ? `test_${testName.replace(/\s/g, '_')}` : user.uid);
-                  return <div key={i} onClick={() => !p && lockCard(1, i)} style={{...styles.cardSmall, background: isEffectiveMe ? '#1fd18a' : p ? '#333' : '#13141f'}}>{isEffectiveMe ? `#${p.inn1Num}` : p ? "✖" : "🟢"}</div>
+                  return (
+                    <div key={i} onClick={() => !p && lockCard(1, i)} 
+                      style={{...styles.cardComplex, background: p ? '#1fd18a' : '#13141f', border: p ? '1px solid #1fd18a' : '1px solid #333'}}>
+                      {p ? (
+                        <>
+                          <div style={styles.cardNumber}>#{p.inn1Num}</div>
+                          <div style={styles.cardFriend}>{p.userName.split(' ')[0]}</div>
+                        </>
+                      ) : <div style={styles.cardIcon}>🟢</div>}
+                    </div>
+                  );
                 })}
               </div>
-              <div style={{...styles.grid, marginTop:'10px'}}>
+
+              <div style={{...styles.grid, marginTop:'15px'}}>
                 {[...Array(9)].map((_, i) => {
                   const p = allPicks.find(x => x.inn2Card === i);
-                  const isEffectiveMe = p?.userId === (testName ? `test_${testName.replace(/\s/g, '_')}` : user.uid);
-                  return <div key={i} onClick={() => !p && lockCard(2, i)} style={{...styles.cardSmall, background: isEffectiveMe ? '#ff3d5a' : p ? '#333' : '#13141f'}}>{isEffectiveMe ? `#${p.inn2Num}` : p ? "✖" : "🔴"}</div>
+                  return (
+                    <div key={i} onClick={() => !p && lockCard(2, i)} 
+                      style={{...styles.cardComplex, background: p ? '#ff3d5a' : '#13141f', border: p ? '1px solid #ff3d5a' : '1px solid #333'}}>
+                      {p ? (
+                        <>
+                          <div style={styles.cardNumber}>#{p.inn2Num}</div>
+                          <div style={styles.cardFriend}>{p.userName.split(' ')[0]}</div>
+                        </>
+                      ) : <div style={styles.cardIcon}>🔴</div>}
+                    </div>
+                  );
                 })}
               </div>
             </section>
@@ -242,7 +250,6 @@ function App() {
                     <button onClick={adminFetchScorecard} style={styles.btnAction}>Fetch Scorecard</button>
                     <button onClick={submitToSeason} style={{...styles.btnAction, background:'#1fd18a'}}>Final Submit</button>
                   </div>
-                  <div style={{fontSize:'11px', color:'#f0c040'}}>Pot: {allPicks.length} players × {adminPull} = {allPicks.length * adminPull} pts</div>
                 </div>
               )}
               
@@ -284,7 +291,7 @@ function App() {
 
           {tab === 'season' && (
             <section>
-              <h3 style={{marginBottom:'15px'}}>Season Leaderboard</h3>
+              <h3>Season Leaderboard</h3>
               <div style={styles.table}>
                 <div style={{...styles.tableHeader, background:'#000'}}>
                   <div style={{flex:1, paddingLeft:'15px'}}>RANK</div>
@@ -317,10 +324,11 @@ const styles = {
   tabOn: { flex: 1, padding: '10px', background: '#ff5f1f', border: 'none', color: 'white', fontWeight: 'bold' },
   tabOff: { flex: 1, padding: '10px', background: '#13141f', border: 'none', color: '#777' },
   matchCard: { background: '#13141f', padding: '12px', margin: '5px 0', borderRadius: '4px', border: '1px solid #252638' },
-  grid: { display: 'grid', gridTemplateColumns: 'repeat(9, 1fr)', gap: '3px' },
-  cardSmall: { height: '35px', display: 'flex', justifyContent: 'center', alignItems: 'center', borderRadius: '2px', border: '1px solid #333', fontSize: '9px' },
-  btnPrimary: { background: '#ff5f1f', color: 'white', padding: '12px 25px', border: 'none', borderRadius: '4px' },
-  btnAdmin: { width: '100%', background: '#f0c040', color: '#000', padding: '8px', border: 'none', borderRadius: '4px', fontWeight: 'bold', marginBottom: '10px' },
+  grid: { display: 'grid', gridTemplateColumns: 'repeat(9, 1fr)', gap: '6px' },
+  cardComplex: { height: '55px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', borderRadius: '6px', cursor: 'pointer', transition: 'all 0.2s' },
+  cardNumber: { fontSize: '16px', fontWeight: 'bold', color: '#000' },
+  cardFriend: { fontSize: '9px', fontWeight: '600', color: '#000', textTransform: 'uppercase', overflow: 'hidden', whiteSpace: 'nowrap', width: '90%', textAlign: 'center' },
+  cardIcon: { fontSize: '18px' },
   testPanel: { background:'#1a1b28', padding:'10px', borderRadius:'8px', border:'1px dashed #f0c040', marginBottom:'15px', display:'flex', alignItems:'center', gap:'10px' },
   testInput: { background:'#000', color:'#fff', border:'1px solid #333', padding:'5px', fontSize:'12px', flex:1 },
   testBtn: { background:'#333', color:'#777', border:'none', fontSize:'10px', padding:'5px', borderRadius:'4px' },
