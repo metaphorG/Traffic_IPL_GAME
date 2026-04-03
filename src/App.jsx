@@ -16,7 +16,10 @@ function App() {
   const [allPicks, setAllPicks] = useState([]);
   const [leaderboard, setLeaderboard] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [adminPull, setAdminPull] = useState(20); // Dynamic Pull per match
+  const [adminPull, setAdminPull] = useState(20);
+
+  // TEST MODE STATE
+  const [testName, setTestName] = useState(""); 
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
@@ -96,12 +99,10 @@ function App() {
       return { 
         ...p, 
         p1Name: s1?.name || "TBD", p2Name: s2?.name || "TBD",
-        p1Team: s1?.team || "-", p2Team: s2?.team || "-",
         r1: s1?.runs || 0, r2: s2?.runs || 0, total: (s1?.runs || 0) + (s2?.runs || 0) 
       };
     }).sort((a,b) => b.total - a.total);
 
-    // Dynamic Math based on player count
     const totalPlayers = allPicks.length;
     const pot = totalPlayers * adminPull;
     const remPot = pot - adminPull; 
@@ -115,14 +116,14 @@ function App() {
       let startPos = rank;
       
       tieGroup.forEach(r => {
-        if (startPos === 0) { // 1st Place logic
+        if (startPos === 0) {
           if (count === 1) r.net = p1Amt - adminPull;
           else if (count === 2) r.net = Math.round((p1Amt + p2Amt) / 2) - adminPull;
           else r.net = Math.round((p1Amt + p2Amt + adminPull) / count) - adminPull;
-        } else if (startPos === 1) { // 2nd Place logic
+        } else if (startPos === 1) {
           if (count === 1) r.net = p2Amt - adminPull;
           else r.net = Math.round((p2Amt + adminPull) / count) - adminPull;
-        } else if (startPos === 2) { // 3rd Place gets back pull
+        } else if (startPos === 2) {
           r.net = count === 1 ? 0 : -adminPull;
         } else {
           r.net = -adminPull;
@@ -163,11 +164,17 @@ function App() {
   };
 
   const lockCard = async (inn, idx) => {
-    if (allPicks.some(p => p.userId === user.uid && p[`inn${inn}Card`] !== undefined)) return;
+    // Determine effective identity
+    const effectiveUID = testName ? `test_${testName.replace(/\s/g, '_')}` : user.uid;
+    const effectiveName = testName || user.displayName;
+
+    const myExisting = allPicks.find(p => p.userId === effectiveUID);
+    if (myExisting && myExisting[`inn${inn}Card`] !== undefined) return;
     if (allPicks.some(p => p[`inn${inn}Card`] === idx)) return alert("Taken!");
+    
     const num = matchDeck[`inn${inn}Deck`][idx];
-    await setDoc(doc(db, "match_picks", `${selectedMatch.id}_${user.uid}`), {
-      userId: user.uid, userName: user.displayName, matchId: selectedMatch.id,
+    await setDoc(doc(db, "match_picks", `${selectedMatch.id}_${effectiveUID}`), {
+      userId: effectiveUID, userName: effectiveName, matchId: selectedMatch.id,
       [`inn${inn}Card`]: idx, [`inn${inn}Num`]: num, timestamp: serverTimestamp()
     }, { merge: true });
   };
@@ -198,17 +205,28 @@ function App() {
 
           {tab === 'play' && selectedMatch && (
             <section>
+              {/* ADMIN TEST MODE UI */}
+              {user.email === ADMIN_EMAIL && (
+                <div style={styles.testPanel}>
+                  <span style={{fontSize:'11px', color:'#f0c040'}}>🧪 TEST MODE: Pick as:</span>
+                  <input placeholder="Friend Name" value={testName} onChange={e => setTestName(e.target.value)} style={styles.testInput}/>
+                  <button onClick={() => setTestName("")} style={styles.testBtn}>Reset to Me</button>
+                </div>
+              )}
+
               <h3 style={{marginBottom:'10px'}}>{selectedMatch.name}</h3>
               <div style={styles.grid}>
                 {[...Array(9)].map((_, i) => {
                   const p = allPicks.find(x => x.inn1Card === i);
-                  return <div key={i} onClick={() => !p && lockCard(1, i)} style={{...styles.cardSmall, background: p?.userId === user.uid ? '#1fd18a' : p ? '#333' : '#13141f'}}>{p?.userId === user.uid ? `#${p.inn1Num}` : p ? "✖" : "🟢"}</div>
+                  const isEffectiveMe = p?.userId === (testName ? `test_${testName.replace(/\s/g, '_')}` : user.uid);
+                  return <div key={i} onClick={() => !p && lockCard(1, i)} style={{...styles.cardSmall, background: isEffectiveMe ? '#1fd18a' : p ? '#333' : '#13141f'}}>{isEffectiveMe ? `#${p.inn1Num}` : p ? "✖" : "🟢"}</div>
                 })}
               </div>
               <div style={{...styles.grid, marginTop:'10px'}}>
                 {[...Array(9)].map((_, i) => {
                   const p = allPicks.find(x => x.inn2Card === i);
-                  return <div key={i} onClick={() => !p && lockCard(2, i)} style={{...styles.cardSmall, background: p?.userId === user.uid ? '#ff3d5a' : p ? '#333' : '#13141f'}}>{p?.userId === user.uid ? `#${p.inn2Num}` : p ? "✖" : "🔴"}</div>
+                  const isEffectiveMe = p?.userId === (testName ? `test_${testName.replace(/\s/g, '_')}` : user.uid);
+                  return <div key={i} onClick={() => !p && lockCard(2, i)} style={{...styles.cardSmall, background: isEffectiveMe ? '#ff3d5a' : p ? '#333' : '#13141f'}}>{isEffectiveMe ? `#${p.inn2Num}` : p ? "✖" : "🔴"}</div>
                 })}
               </div>
             </section>
@@ -219,7 +237,7 @@ function App() {
               {user.email === ADMIN_EMAIL && (
                 <div style={styles.adminPanel}>
                   <div style={{display:'flex', gap:'10px', alignItems:'center', marginBottom:'10px'}}>
-                    <label style={{fontSize:'12px'}}>Set Pull Amount:</label>
+                    <label style={{fontSize:'12px'}}>Pull:</label>
                     <input type="number" value={adminPull} onChange={(e) => setAdminPull(parseInt(e.target.value) || 0)} style={styles.adminInput}/>
                     <button onClick={adminFetchScorecard} style={styles.btnAction}>Fetch Scorecard</button>
                     <button onClick={submitToSeason} style={{...styles.btnAction, background:'#1fd18a'}}>Final Submit</button>
@@ -266,7 +284,7 @@ function App() {
 
           {tab === 'season' && (
             <section>
-              <h3 style={{marginBottom:'15px'}}>Season Points Table</h3>
+              <h3 style={{marginBottom:'15px'}}>Season Leaderboard</h3>
               <div style={styles.table}>
                 <div style={{...styles.tableHeader, background:'#000'}}>
                   <div style={{flex:1, paddingLeft:'15px'}}>RANK</div>
@@ -303,8 +321,11 @@ const styles = {
   cardSmall: { height: '35px', display: 'flex', justifyContent: 'center', alignItems: 'center', borderRadius: '2px', border: '1px solid #333', fontSize: '9px' },
   btnPrimary: { background: '#ff5f1f', color: 'white', padding: '12px 25px', border: 'none', borderRadius: '4px' },
   btnAdmin: { width: '100%', background: '#f0c040', color: '#000', padding: '8px', border: 'none', borderRadius: '4px', fontWeight: 'bold', marginBottom: '10px' },
+  testPanel: { background:'#1a1b28', padding:'10px', borderRadius:'8px', border:'1px dashed #f0c040', marginBottom:'15px', display:'flex', alignItems:'center', gap:'10px' },
+  testInput: { background:'#000', color:'#fff', border:'1px solid #333', padding:'5px', fontSize:'12px', flex:1 },
+  testBtn: { background:'#333', color:'#777', border:'none', fontSize:'10px', padding:'5px', borderRadius:'4px' },
   adminPanel: { background:'#13141f', padding:'10px', borderRadius:'8px', border:'1px solid #f0c040', marginBottom:'15px' },
-  adminInput: { background:'#000', color:'#fff', border:'1px solid #444', width:'60px', padding:'5px', borderRadius:'4px' },
+  adminInput: { background:'#000', color:'#fff', border:'1px solid #444', width:'50px', padding:'5px', borderRadius:'4px' },
   btnAction: { background:'#f0c040', color:'#000', padding:'5px 12px', border:'none', borderRadius:'4px', fontWeight:'bold', cursor:'pointer' },
   podiumContainer: { display: 'flex', justifyContent: 'center', alignItems: 'flex-end', gap: '8px', margin: '15px 0', height: '170px' },
   pod: { flex: 1, background: '#13141f', border: '1px solid #252638', borderRadius: '8px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '5px' },
