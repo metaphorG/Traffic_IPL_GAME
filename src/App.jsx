@@ -19,11 +19,17 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [adminPull, setAdminPull] = useState(20);
   const [testName, setTestName] = useState(""); 
+  const [totalCredits, setTotalCredits] = useState(null); // New state for ticker
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
       setUser(u);
-      if (u) { loadMatchCache(); loadLeaderboard(); loadMatchHistory(); }
+      if (u) { 
+        loadMatchCache(); 
+        loadLeaderboard(); 
+        loadMatchHistory();
+        if (u.email === ADMIN_EMAIL) fetchTotalCredits(); // Fetch credits for admin
+      }
       setLoading(false);
     });
     return () => unsubscribe();
@@ -34,6 +40,21 @@ function App() {
     const q = query(collection(db, "match_picks"), where("matchId", "==", selectedMatch.id));
     return onSnapshot(q, (snap) => setAllPicks(snap.docs.map(d => d.data())));
   }, [selectedMatch]);
+
+  // NEW: Function to sum credits from all 4 keys
+  const fetchTotalCredits = async () => {
+    let sum = 0;
+    for (let key of CRIC_KEYS) {
+      try {
+        const res = await fetch(`https://api.cricapi.com/v1/metadata?apikey=${key}`);
+        const data = await res.json();
+        if (data.status === 'success') {
+          sum += (data.data.hitsLimit - data.data.hitsUsed);
+        }
+      } catch (e) { console.error("Credit fetch failed for a key", e); }
+    }
+    setTotalCredits(sum);
+  };
 
   const formatIST = (gmtStr) => {
     if (!gmtStr) return "TBD";
@@ -62,7 +83,6 @@ function App() {
     setMatchHistory(historyData.sort((a,b) => b.updatedAt - a.updatedAt));
   };
 
-  // --- ADMIN DATA HELPERS ---
   const updateSeasonPoint = async (userId, newVal) => {
     try {
       await setDoc(doc(db, "users", userId), { totalPoints: parseInt(newVal) || 0 }, { merge: true });
@@ -88,6 +108,7 @@ function App() {
           const list = (data.data.matchList || []);
           await setDoc(doc(db, "system", "match_cache"), { list, updatedAt: serverTimestamp() });
           setMatches(list);
+          fetchTotalCredits(); // Update credits after API call
           return;
         }
       } catch (e) { console.error(e); }
@@ -110,6 +131,7 @@ function App() {
           const scores = { inn1: parse(sc[0], t1Name), inn2: parse(sc[1], t2Name), updatedAt: new Date() };
           await setDoc(doc(db, "active_matches", selectedMatch.id), { scores, t1: t1Name, t2: t2Name }, { merge: true });
           setSelectedMatch({ ...selectedMatch, scores, t1: t1Name, t2: t2Name });
+          fetchTotalCredits(); // Update credits after API call
           return;
         }
       } catch (e) { console.error(e); }
@@ -289,7 +311,17 @@ function App() {
 
       {tab === 'results' && selectedMatch && (
         <section style={{padding: '0 15px'}}>
-          {user.email === ADMIN_EMAIL && !selectedMatch.settled && <div style={styles.adminPanel}><input type="number" value={adminPull} onChange={(e) => setAdminPull(parseInt(e.target.value))} style={styles.adminInput}/><button onClick={adminFetchScorecard} style={styles.btnAction}>FETCH</button><button onClick={submitToSeason} style={{...styles.btnAction, background:'#1fd18a'}}>FINALIZE</button></div>}
+          {user.email === ADMIN_EMAIL && !selectedMatch.settled && (
+            <div style={styles.adminPanel}>
+                <input type="number" value={adminPull} onChange={(e) => setAdminPull(parseInt(e.target.value))} style={styles.adminInput}/>
+                <button onClick={adminFetchScorecard} style={styles.btnAction}>SYNC</button>
+                {/* TICKER DISPLAY */}
+                <div style={styles.ticker}>
+                    API Credits: <span style={{color: totalCredits < 100 ? '#ff3d5a' : '#1fd18a'}}>{totalCredits ?? '...'}</span>
+                </div>
+                <button onClick={submitToSeason} style={{...styles.btnAction, background:'#1fd18a'}}>FINALIZE</button>
+            </div>
+          )}
           <div style={styles.podiumContainer}>
             {finalRankings.slice(0, 3).map((r, i) => (
               <div key={i} style={{...styles.pod, order: i === 0 ? 2 : i === 1 ? 1 : 3, height: i === 0 ? '160px' : '140px', borderColor: i === 0 ? '#f0c040' : '#252638'}}>
@@ -311,40 +343,20 @@ function App() {
           <h2 style={styles.sectionHeader}>🏆 SEASON STANDINGS</h2>
           <div style={{...styles.tableWrap, marginBottom:'40px', background:'#0e0f1a'}}>
              {leaderboard.map((u, i) => (
-               <div key={i} style={styles.tableRow}><div style={{flex:1, color:'#52536e'}}>0{i+1}</div><div style={{flex:3, fontWeight:'bold', color: i === 0 ? '#f0c040' : '#eee'}}>{u.name}</div><div style={{flex:2, textAlign:'right', color: u.totalPoints >= 0 ? '#1fd18a' : '#ff3d5a', fontSize:'22px', fontFamily:'Bebas Neue'}}>{u.totalPoints > 0 ? '+' : ''}{u.totalPoints}</div></div>
+               <div key={i} style={{...styles.tableRow, background: i === 0 ? 'rgba(240,192,64,0.05)' : 'transparent'}}><div style={{flex:1, color:'#52536e'}}>0{i+1}</div><div style={{flex:3, fontWeight:'bold', color: i === 0 ? '#f0c040' : '#eee'}}>{u.name}</div><div style={{flex:2, textAlign:'right', color: u.totalPoints >= 0 ? '#1fd18a' : '#ff3d5a', fontSize:'22px', fontFamily:'Bebas Neue'}}>{u.totalPoints > 0 ? '+' : ''}{u.totalPoints}</div></div>
              ))}
           </div>
-
           <div style={{display:'flex', justifyContent:'space-between', alignItems:'baseline'}}><h2 style={styles.sectionHeader}>📋 MATCH HISTORY</h2>{user.email === ADMIN_EMAIL && <button onClick={nuclearReset} style={{background:'none', border:'none', color:'#ff3d5a', fontSize:'11px'}}>ERASE DATA</button>}</div>
           {matchHistory.map((m, i) => {
             const res = calculateFinalPoints(m, m.allPicks);
-            return (
-              <div key={i} className="match-history-card" onClick={() => { setSelectedMatch(m); setTab('results'); }}>
-                <div style={{display:'flex', justifyContent:'space-between', marginBottom:'12px', borderBottom:'1px solid #252638', paddingBottom:'8px'}}>
-                    <span style={{fontWeight:'bold', fontSize:'15px'}}>🏏 {m.matchName || "IPL Match"}</span>
-                    <span style={{fontSize:'11px', color:'#7a7b98'}}>{m.dateText} • Pull: {m.finalPull}</span>
-                </div>
-                <div style={{display:'flex', gap:'8px', marginBottom:'12px'}}>
-                    <div className="pill" style={{borderColor:'#f0c040'}}>🥇 {res[0]?.userName}</div>
-                    <div className="pill" style={{borderColor:'#c0c0c0'}}>🥈 {res[1]?.userName}</div>
-                    <div className="pill" style={{borderColor:'#cd7f32'}}>🥉 {res[2]?.userName}</div>
-                </div>
-                <div style={{display:'flex', flexWrap:'wrap', gap:'10px', fontSize:'11px', color:'#52536e'}}>
-                    {res.map((p, idx) => (
-                        <span key={idx}>{p.userName}: <span style={{color: p.net > 0 ? '#1fd18a' : p.net === 0 ? '#eee' : '#ff3d5a'}}>{p.net > 0 ? '+' : ''}{p.net}</span>{idx < res.length - 1 ? ' •' : ''}</span>
-                    ))}
-                </div>
-              </div>
-            );
+            return (<div key={i} className="match-history-card" onClick={() => { setSelectedMatch(m); setTab('results'); }}><div style={{display:'flex', justifyContent:'space-between', marginBottom:'12px', borderBottom:'1px solid #252638', paddingBottom:'8px'}}><span style={{fontWeight:'bold', fontSize:'15px'}}>🏏 {m.matchName}</span><span style={{fontSize:'11px', color:'#7a7b98'}}>{m.dateText} • Pull: {m.finalPull}</span></div><div style={{display:'flex', gap:'8px', marginBottom:'12px'}}><div className="pill" style={{borderColor:'#f0c040'}}>🥇 {res[0]?.userName}</div><div className="pill" style={{borderColor:'#c0c0c0'}}>🥈 {res[1]?.userName}</div><div className="pill" style={{borderColor:'#cd7f32'}}>🥉 {res[2]?.userName}</div></div><div style={{display:'flex', flexWrap:'wrap', gap:'10px', fontSize:'11px', color:'#52536e'}}>{res.map((p, idx) => (<span key={idx}>{p.userName}: <span style={{color: p.net > 0 ? '#1fd18a' : p.net === 0 ? '#eee' : '#ff3d5a'}}>{p.net > 0 ? '+' : ''}{p.net}</span>{idx < res.length - 1 ? ' •' : ''}</span>))}</div></div>);
           })}
         </section>
       )}
 
-      {/* --- NEW ADMIN DATA TAB --- */}
       {tab === 'data' && user.email === ADMIN_EMAIL && (
         <section style={{padding: '0 15px'}}>
           <h2 style={styles.sectionHeader}>⚙️ DATA CONTROL CENTER</h2>
-          
           <div style={styles.adminDataBox}>
             <h4 style={{color:'#f0c040', marginBottom:'15px', fontFamily:'Bebas Neue', letterSpacing:'1px'}}>MANUAL POINTS ADJUSTMENT</h4>
             {leaderboard.map(u => (
@@ -352,35 +364,17 @@ function App() {
                 <span style={{fontWeight:'600'}}>{u.name}</span>
                 <div style={{display:'flex', alignItems:'center', gap:'10px'}}>
                     <span style={{fontSize:'10px', color:'#52536e'}}>POINTS:</span>
-                    <input 
-                      type="number" 
-                      defaultValue={u.totalPoints} 
-                      onBlur={(e) => updateSeasonPoint(u.id, e.target.value)} 
-                      style={styles.dataInput} 
-                    />
+                    <input type="number" defaultValue={u.totalPoints} onBlur={(e) => updateSeasonPoint(u.id, e.target.value)} style={styles.dataInput} />
                 </div>
               </div>
             ))}
-            <p style={{fontSize:'10px', color:'#52536e', marginTop:'10px'}}>* Edit number and click outside (Blur) to auto-save.</p>
           </div>
-
           <div style={{...styles.adminDataBox, marginTop:'25px'}}>
-            <h4 style={{color:'#f0c040', marginBottom:'15px', fontFamily:'Bebas Neue', letterSpacing:'1px'}}>
-              MANAGE PICKS: {selectedMatch?.name || 'SELECT A MATCH FIRST'}
-            </h4>
-            {allPicks.length === 0 ? <p style={{color:'#52536e'}}>No picks found for this match.</p> : 
-              allPicks.map((p, idx) => (
+            <h4 style={{color:'#f0c040', marginBottom:'15px', fontFamily:'Bebas Neue', letterSpacing:'1px'}}>MANAGE PICKS</h4>
+            {allPicks.map((p, idx) => (
                 <div key={idx} style={styles.adminDataRow}>
-                  <div>
-                      <div style={{fontWeight:'bold'}}>{p.userName}</div>
-                      <div style={{fontSize:'10px', color:'#7a7b98'}}>Inn1: #{p.inn1Num} | Inn2: #{p.inn2Num}</div>
-                  </div>
-                  <button 
-                      onClick={() => deletePick(`${selectedMatch.id}_${p.userId}`)} 
-                      style={{background:'rgba(255,61,90,0.1)', color:'#ff3d5a', border:'1px solid #ff3d5a', borderRadius:'4px', padding:'4px 10px', fontSize:'10px', fontWeight:'bold'}}
-                  >
-                      DELETE PICK
-                  </button>
+                  <div><div style={{fontWeight:'bold'}}>{p.userName}</div><div style={{fontSize:'10px', color:'#7a7b98'}}>I1: #{p.inn1Num} | I2: #{p.inn2Num}</div></div>
+                  <button onClick={() => deletePick(`${selectedMatch.id}_${p.userId}`)} style={{background:'rgba(255,61,90,0.1)', color:'#ff3d5a', border:'1px solid #ff3d5a', borderRadius:'4px', padding:'4px 10px', fontSize:'10px', fontWeight:'bold'}}>DELETE</button>
                 </div>
               ))
             }
@@ -394,8 +388,6 @@ function App() {
 const styles = {
   container: { background: '#07080f', minHeight: '100vh', paddingBottom: '60px' },
   center: { height: '100vh', display: 'flex', justifyContent: 'center', alignItems: 'center', color: '#f0c040', fontSize: '32px', fontFamily: 'Bebas Neue' },
-  heroTitle: { fontSize: '48px', fontFamily: 'Bebas Neue', color: '#f0c040', marginBottom: '20px' },
-  authPage: { height: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' },
   tabs: { display: 'flex', background: '#0e0f1a', borderBottom: '1px solid #252638', position: 'sticky', top: 0, zIndex: 100 },
   tabOn: { flex: 1, padding: '15px', background: '#ff5f1f', border: 'none', color: '#fff', fontWeight: 'bold', fontSize: '11px', letterSpacing:'1px' },
   tabOff: { flex: 1, padding: '15px', background: 'transparent', border: 'none', color: '#52536e', fontSize: '11px', letterSpacing:'1px' },
@@ -412,9 +404,10 @@ const styles = {
   cardNumber: { fontSize: '32px', fontFamily: 'Bebas Neue' },
   cardFriend: { fontSize: '11px', fontWeight: '800', textTransform: 'uppercase' },
   nextBox: { marginTop:'30px', textAlign:'center', padding:'20px', background:'rgba(240,192,64,0.05)', borderRadius:'12px', border:'1px dashed #f0c040' },
-  adminPanel: { background:'#13141f', padding:'20px', borderRadius:'15px', border:'1px solid #f0c040', marginBottom:'25px', display:'flex', gap:'10px' },
+  adminPanel: { background:'#13141f', padding:'15px', borderRadius:'15px', border:'1px solid #f0c040', marginBottom:'25px', display:'flex', gap:'10px', alignItems:'center' },
   adminInput: { background:'#000', color:'#fff', border:'1px solid #333', width:'70px', padding:'10px', borderRadius:'8px', textAlign:'center' },
-  btnAction: { flex: 1, background:'#f0c040', color:'#000', border:'none', borderRadius:'8px', fontWeight:'bold' },
+  ticker: { flex:1, textAlign:'center', fontSize:'12px', color:'#7a7b98', fontWeight:'bold', borderLeft:'1px solid #252638', borderRight:'1px solid #252638' },
+  btnAction: { flex: 1, background:'#f0c040', color:'#000', padding:'12px', border:'none', borderRadius:'8px', fontWeight:'bold' },
   btnPrimary: { background: 'linear-gradient(135deg, #ff5f1f, #d44a0f)', color: 'white', padding: '15px 45px', border: 'none', borderRadius: '100px', fontWeight: 'bold', fontSize: '14px' },
   podiumContainer: { display: 'flex', justifyContent: 'center', alignItems: 'flex-end', gap: '12px', margin: '35px 0', height: '190px' },
   pod: { flex: 1, background: '#13141f', border: '1px solid #252638', borderRadius: '20px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' },
@@ -422,7 +415,7 @@ const styles = {
   podScore: { fontSize: '42px', color: '#f0c040', fontFamily: 'Bebas Neue' },
   tableWrap: { background: '#13141f', borderRadius: '20px', overflow: 'hidden', border: '1px solid #252638' },
   tableHeader: { display: 'flex', background: '#1a1b28', padding: '15px 12px', fontSize: '11px', color: '#7a7b98', fontWeight: 'bold' },
-  tableRow: { display: 'flex', padding: '18px 12px', fontSize: '13px', borderBottom: '1px solid #252638', alignItems: 'center' },
+  tableRow: { display: 'flex', padding: '18px 12px', fontSize: '14px', borderBottom: '1px solid #252638', alignItems: 'center' },
   colF: { flex: 1.5, fontWeight: 'bold' },
   colInn: { flex: 3 },
   playerName: { fontSize: '10px', marginLeft: '6px', color: '#52536e' },
