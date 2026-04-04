@@ -64,16 +64,13 @@ function App() {
     if (snap.exists()) {
       const allMatches = snap.data().list;
       const todayIST = new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
-
-      // Admin sees everything, users only see Today
       if (auth.currentUser?.email === ADMIN_EMAIL) {
         setMatches(allMatches);
       } else {
-        const filtered = allMatches.filter(m => {
+        setMatches(allMatches.filter(m => {
           const mDate = new Date(m.dateTimeGMT.replace(' ', 'T') + 'Z').toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
           return mDate === todayIST;
-        });
-        setMatches(filtered);
+        }));
       }
     }
   };
@@ -111,7 +108,19 @@ function App() {
     const snap = await getDocs(q);
     snap.forEach(d => batch.delete(d.ref));
     await batch.commit();
-    alert("Match Selections Cleared.");
+    alert("Match Reset!");
+  };
+
+  // NEW: Admin Toggle to Archive/Unarchive match
+  const toggleArchive = async () => {
+    if (!selectedMatch || user.email !== ADMIN_EMAIL) return;
+    const newState = !selectedMatch.settled;
+    if (newState === false && !window.confirm("Unlock this match? Points will NOT be reversed automatically, you must adjust them in DATA tab if needed.")) return;
+    
+    await setDoc(doc(db, "active_matches", selectedMatch.id), { settled: newState }, { merge: true });
+    setSelectedMatch(prev => ({...prev, settled: newState}));
+    loadMatchHistory();
+    alert(newState ? "Match Archived" : "Match Unlocked for Edits");
   };
 
   const adminFetchMatches = async () => {
@@ -132,7 +141,7 @@ function App() {
   };
 
   const adminFetchScorecard = async () => {
-    if (user.email !== ADMIN_EMAIL || selectedMatch?.settled) return;
+    if (user.email !== ADMIN_EMAIL || (selectedMatch?.settled && user.email !== ADMIN_EMAIL)) return;
     for (let key of CRIC_KEYS) {
       try {
         const res = await fetch(`https://api.cricapi.com/v1/match_scorecard?apikey=${key}&id=${selectedMatch.id}`);
@@ -195,7 +204,7 @@ function App() {
 
   const nuclearReset = async () => {
     if (user.email !== ADMIN_EMAIL) return;
-    if (!window.confirm("☢️ NUCLEAR RESET: ERASE ALL?")) return;
+    if (!window.confirm("☢️ NUCLEAR RESET?")) return;
     const cols = ['match_picks', 'active_matches', 'users'];
     for (const c of cols) {
       const snap = await getDocs(collection(db, c));
@@ -234,7 +243,7 @@ function App() {
   const userHasFinished = allPicks.find(p => p.userId === effectiveID)?.inn1Card !== undefined && 
                           allPicks.find(p => p.userId === effectiveID)?.inn2Card !== undefined;
 
-  if (loading) return <div style={styles.center}>🏏 PREPARING STADIUM...</div>;
+  if (loading) return <div style={styles.center}>🏏 LOADING...</div>;
 
   return (
     <div style={styles.container}>
@@ -260,7 +269,7 @@ function App() {
           {tab === 'matches' && (
             <section style={{padding: '0 15px'}}>
               {user.email === ADMIN_EMAIL && <button onClick={adminFetchMatches} style={styles.btnAdmin}>ADMIN: SYNC FIXTURES</button>}
-              {matches.length === 0 ? <div style={{textAlign:'center', marginTop:'50px', color:'#52536e'}}>No matches found.</div> : 
+              {matches.length === 0 ? <div style={{textAlign:'center', marginTop:'50px', color:'#52536e'}}>No matches today.</div> : 
                 matches.map(m => {
                   const todayStr = new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
                   const matchStr = new Date(m.dateTimeGMT.replace(' ', 'T') + 'Z').toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
@@ -320,7 +329,20 @@ function App() {
 
           {tab === 'results' && selectedMatch && (
             <section style={{padding: '0 15px'}}>
-              {user.email === ADMIN_EMAIL && !selectedMatch.settled && <div style={styles.adminPanel}><input type="number" value={adminPull} onChange={(e) => setAdminPull(parseInt(e.target.value))} style={styles.adminInput}/><button onClick={adminFetchScorecard} style={styles.btnAction}>SYNC</button><div style={styles.ticker}>Credits: {totalCredits ?? '...'}</div><button onClick={submitToSeason} style={{...styles.btnAction, background:'#1fd18a'}}>SETTLE</button></div>}
+              {user.email === ADMIN_EMAIL && (
+                <div style={styles.adminPanel}>
+                   {selectedMatch.settled ? (
+                     <button onClick={toggleArchive} style={{...styles.btnAction, background:'#ff3d5a'}}>⚠️ UNLOCK FOR EDITS</button>
+                   ) : (
+                     <>
+                        <input type="number" value={adminPull} onChange={(e) => setAdminPull(parseInt(e.target.value))} style={styles.adminInput}/>
+                        <button onClick={adminFetchScorecard} style={styles.btnAction}>SYNC</button>
+                        <div style={styles.ticker}>Credits: {totalCredits ?? '...'}</div>
+                        <button onClick={submitToSeason} style={{...styles.btnAction, background:'#1fd18a'}}>FINALIZE</button>
+                     </>
+                   )}
+                </div>
+              )}
               <div style={styles.podiumContainer}>
                 {calculateFinalPoints(selectedMatch, allPicks).slice(0, 3).map((r, i) => (
                   <div key={i} style={{...styles.pod, order: i === 0 ? 2 : i === 1 ? 1 : 3, height: i === 0 ? '160px' : '140px', borderColor: i === 0 ? '#f0c040' : '#252638'}}>
@@ -331,7 +353,7 @@ function App() {
               <div style={styles.tableWrap}>
                 <div style={styles.tableHeader}><div style={styles.colF}>FRIEND</div><div style={styles.colInn}>PLAYER 1</div><div style={styles.colR}>RUNS</div><div style={styles.colInn}>PLAYER 2</div><div style={styles.colR}>RUNS</div><div style={styles.colTot}>TOTAL</div></div>
                 {calculateFinalPoints(selectedMatch, allPicks).map((p, i) => (
-                  <div key={i} style={styles.tableRow}><div style={styles.colF}>{p.userName.split(' ')[0]}</div><div style={styles.colInn}><span style={{color:'#1fd18a'}}>#{p.inn1Num}</span> <span style={styles.playerName}>{p.p1Name}</span></div><div style={styles.colR}>{p.r1}</div><div style={styles.colInn}><span style={{color:'#ff3d5a'}}>#{p.inn2Num}</span> <span style={styles.playerName}>{p.p2Name}</span></div><div style={styles.colR}>{p.r2}</div><div style={{...styles.colTot, color:'#f0c040'}}>{p.total}</div></div>
+                  <div key={i} style={styles.tableRow}><div style={styles.colF}>{p.userName.split(' ')[0]}</div><div style={styles.colInn}><span style={{color:'#1fd18a', fontWeight:'bold'}}>#{p.inn1Num}</span> <span style={styles.playerName}>{p.p1Name}</span></div><div style={styles.colR}>{p.r1}</div><div style={styles.colInn}><span style={{color:'#ff3d5a', fontWeight:'bold'}}>#{p.inn2Num}</span> <span style={styles.playerName}>{p.p2Name}</span></div><div style={styles.colR}>{p.r2}</div><div style={{...styles.colTot, color:'#f0c040'}}>{p.total}</div></div>
                 ))}
               </div>
             </section>
@@ -429,7 +451,7 @@ const styles = {
   colR: { width: '45px', textAlign: 'center' },
   colTot: { width: '55px', textAlign: 'center', fontSize: '18px', fontFamily: 'Bebas Neue' },
   sectionHeader: { color: '#f0c040', fontFamily: 'Bebas Neue', letterSpacing: '3px', marginBottom: '15px', marginTop:'20px' },
-  lockBadge: { background: 'rgba(255,255,255,0.05)', color: '#7a7b98', fontSize: '11px', textAlign: 'center', padding: '6px', borderRadius: '100px', border: '1px solid #252638', marginBottom: '15px' },
+  lockBadge: { background: 'rgba(255,61,90,0.1)', color: '#ff3d5a', fontSize: '11px', textAlign: 'center', padding: '6px', borderRadius: '100px', border: '1px solid #ff3d5a', marginBottom: '15px', fontWeight:'bold' },
   adminDataBox: { background: '#13141f', padding: '20px', borderRadius: '15px', border: '1px solid #252638' },
   adminDataRow: { display: 'flex', justifyContent: 'space-between', padding: '12px 0', borderBottom: '1px solid #1a1b28', alignItems:'center' },
   dataInput: { background:'#000', color:'#f0c040', border:'1px solid #333', padding:'6px', borderRadius:'6px', width:'70px', textAlign:'center', fontWeight:'bold' },
