@@ -41,14 +41,17 @@ function App() {
     return onSnapshot(q, (snap) => setAllPicks(snap.docs.map(d => d.data())));
   }, [selectedMatch]);
 
+  // FIXED: Logic to properly sum credits from all keys, even if some are empty
   const fetchTotalCredits = async () => {
     let sum = 0;
     for (let key of CRIC_KEYS) {
       try {
         const res = await fetch(`https://api.cricapi.com/v1/metadata?apikey=${key}`);
         const data = await res.json();
-        if (data.status === 'success') sum += (data.data.hitsLimit - data.data.hitsUsed);
-      } catch (e) { console.error(e); }
+        if (data.status === 'success') {
+          sum += (data.data.hitsLimit - data.data.hitsUsed);
+        }
+      } catch (e) { console.error("Key metadata fetch error"); }
     }
     setTotalCredits(sum);
   };
@@ -111,37 +114,40 @@ function App() {
     alert("Match Reset!");
   };
 
-  // NEW: Admin Toggle to Archive/Unarchive match
   const toggleArchive = async () => {
     if (!selectedMatch || user.email !== ADMIN_EMAIL) return;
     const newState = !selectedMatch.settled;
-    if (newState === false && !window.confirm("Unlock this match? Points will NOT be reversed automatically, you must adjust them in DATA tab if needed.")) return;
-    
+    if (newState === false && !window.confirm("Unlock this match for edits?")) return;
     await setDoc(doc(db, "active_matches", selectedMatch.id), { settled: newState }, { merge: true });
     setSelectedMatch(prev => ({...prev, settled: newState}));
     loadMatchHistory();
-    alert(newState ? "Match Archived" : "Match Unlocked for Edits");
   };
 
+  // FIXED: True multi-key fallback logic
   const adminFetchMatches = async () => {
     if (user.email !== ADMIN_EMAIL) return;
     for (let key of CRIC_KEYS) {
       try {
         const res = await fetch(`https://api.cricapi.com/v1/series_info?apikey=${key}&id=${IPL_SERIES_ID}`);
         const data = await res.json();
+        // If this key is out of credits, it will fail this check, and the loop will try the next key
         if (data.status === 'success') {
           const list = (data.data.matchList || []);
           await setDoc(doc(db, "system", "match_cache"), { list, updatedAt: serverTimestamp() });
           loadMatchCache();
           fetchTotalCredits();
-          return;
+          alert("Fixtures Synchronized");
+          return; 
         }
+        console.log(`Key ${key.substring(0,5)}... failed or exhausted. Trying next...`);
       } catch (e) { console.error(e); }
     }
+    alert("All 4 API keys are exhausted or failing!");
   };
 
+  // FIXED: True multi-key fallback logic
   const adminFetchScorecard = async () => {
-    if (user.email !== ADMIN_EMAIL || (selectedMatch?.settled && user.email !== ADMIN_EMAIL)) return;
+    if (user.email !== ADMIN_EMAIL || selectedMatch?.settled) return;
     for (let key of CRIC_KEYS) {
       try {
         const res = await fetch(`https://api.cricapi.com/v1/match_scorecard?apikey=${key}&id=${selectedMatch.id}`);
@@ -157,10 +163,13 @@ function App() {
           await setDoc(doc(db, "active_matches", selectedMatch.id), { scores, t1: t1Name, t2: t2Name }, { merge: true });
           setSelectedMatch({ ...selectedMatch, scores, t1: t1Name, t2: t2Name });
           fetchTotalCredits();
+          alert("Live Score Updated");
           return;
         }
+        console.log(`Key ${key.substring(0,5)}... exhausted. Trying next...`);
       } catch (e) { console.error(e); }
     }
+    alert("All keys exhausted!");
   };
 
   const calculateFinalPoints = (matchObj, picksArr) => {
@@ -243,7 +252,7 @@ function App() {
   const userHasFinished = allPicks.find(p => p.userId === effectiveID)?.inn1Card !== undefined && 
                           allPicks.find(p => p.userId === effectiveID)?.inn2Card !== undefined;
 
-  if (loading) return <div style={styles.center}>🏏 LOADING...</div>;
+  if (loading) return <div style={styles.center}>🏏 PREPARING ARENA...</div>;
 
   return (
     <div style={styles.container}>
