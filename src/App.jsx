@@ -63,7 +63,18 @@ function App() {
 
   const loadMatchCache = async () => {
     const snap = await getDoc(doc(db, "system", "match_cache"));
-    if (snap.exists()) setMatches(snap.data().list);
+    if (snap.exists()) {
+      const allMatches = snap.data().list;
+      
+      // Filter for matches played TODAY (IST)
+      const todayIST = new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
+      const filtered = allMatches.filter(m => {
+        const matchDateIST = new Date(m.dateTimeGMT.replace(' ', 'T') + 'Z').toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
+        return matchDateIST === todayIST;
+      });
+      
+      setMatches(filtered);
+    }
   };
 
   const loadLeaderboard = async () => {
@@ -106,7 +117,7 @@ function App() {
         if (data.status === 'success') {
           const list = (data.data.matchList || []);
           await setDoc(doc(db, "system", "match_cache"), { list, updatedAt: serverTimestamp() });
-          setMatches(list);
+          loadMatchCache(); // Re-trigger local filter
           fetchTotalCredits();
           return;
         }
@@ -216,6 +227,11 @@ function App() {
     await setDoc(doc(db, "match_picks", `${selectedMatch.id}_${effectiveUID}`), { userId: effectiveUID, userName: effectiveName, matchId: selectedMatch.id, [`inn${inn}Card`]: idx, [`inn${inn}Num`]: matchDeck[`inn${inn}Deck`][idx], timestamp: serverTimestamp() }, { merge: true });
   };
 
+  // Logic to check if BOTH picks are done for the current identity
+  const effectiveID = testName ? `test_${testName.replace(/\s/g, '_')}` : user?.uid;
+  const userHasFinished = allPicks.find(p => p.userId === effectiveID)?.inn1Card !== undefined && 
+                          allPicks.find(p => p.userId === effectiveID)?.inn2Card !== undefined;
+
   if (loading) return <div style={styles.center}>🏏 LOADING...</div>;
 
   return (
@@ -244,7 +260,13 @@ function App() {
           {tab === 'matches' && (
             <section style={{padding: '0 15px'}}>
               {user.email === ADMIN_EMAIL && <button onClick={adminFetchMatches} style={styles.btnAdmin}>ADMIN: SYNC FIXTURES</button>}
-              {matches.slice(0,10).map(m => (<div key={m.id} onClick={() => handleSelectMatch(m)} style={styles.matchCard}><div style={styles.matchMeta}>T20 SERIES • 2026</div><b style={styles.matchTitle}>{m.name}</b><div style={styles.matchTime}>IST: {formatIST(m.dateTimeGMT)}</div></div>))}
+              {matches.length === 0 ? (
+                <div style={{textAlign:'center', marginTop:'50px', color:'#52536e'}}>No matches scheduled for today.</div>
+              ) : matches.map(m => (
+                <div key={m.id} onClick={() => handleSelectMatch(m)} style={styles.matchCard}>
+                  <div style={styles.matchMeta}>T20 SERIES • TODAY</div><b style={styles.matchTitle}>{m.name}</b><div style={styles.matchTime}>IST: {formatIST(m.dateTimeGMT)}</div>
+                </div>
+              ))}
             </section>
           )}
 
@@ -252,19 +274,32 @@ function App() {
             <section style={{padding: '0 15px'}}>
               {user.email === ADMIN_EMAIL && !selectedMatch.settled && <div style={styles.testPanel}><input placeholder="TEST NAME" value={testName} onChange={e => setTestName(e.target.value)} style={styles.testInput}/><button onClick={() => setTestName("")} style={styles.testBtn}>CLEAR</button></div>}
               <h3 style={styles.arenaTitle}>{selectedMatch.name}</h3>
+              
+              {/* TEAM 1 */}
               <div style={styles.teamHeaderBox}><span style={styles.teamLabel}>TEAM GREEN</span><h4 style={{...styles.teamNameText, color:'#1fd18a'}}>{selectedMatch.t1}</h4></div>
               <div style={styles.grid}>
                 {[...Array(9)].map((_, i) => {
                   const p = allPicks.find(x => x.inn1Card === i);
-                  const isMe = p?.userId === (testName ? `test_${testName.replace(/\s/g, '_')}` : user.uid);
+                  const isMe = p?.userId === effectiveID;
                   return <div key={i} onClick={() => !p && lockCard(1, i)} style={{...styles.cardComplex, background: p ? (isMe ? '#1fd18a' : 'rgba(31,209,138,0.1)') : '#13141f', borderColor: p ? '#1fd18a' : '#252638'}}>{p ? <><div style={{...styles.cardNumber, color: isMe ? '#000' : '#1fd18a'}}>#{p.inn1Num}</div><div style={{...styles.cardFriend, color: isMe ? '#000' : '#eee'}}>{p.userName.split(' ')[0]}</div></> : <div style={{fontSize: '24px'}}>🏏</div>}</div>
                 })}
               </div>
-              <div style={{...styles.teamHeaderBox, marginTop:'30px'}}><span style={styles.teamLabel}>TEAM RED</span><h4 style={{...styles.teamNameText, color:'#ff3d5a'}}>{selectedMatch.t2}</h4></div>
+
+              {/* CENTER BUTTON FOR NAVIGATION */}
+              {userHasFinished && (
+                <div style={{display:'flex', justifyContent:'center', margin:'30px 0'}}>
+                   <button onClick={() => setTab('results')} style={styles.btnNavigate}>
+                     VIEW LIVE RESULTS →
+                   </button>
+                </div>
+              )}
+
+              {/* TEAM 2 */}
+              <div style={{...styles.teamHeaderBox, marginTop: userHasFinished ? '0' : '30px'}}><span style={styles.teamLabel}>TEAM RED</span><h4 style={{...styles.teamNameText, color:'#ff3d5a'}}>{selectedMatch.t2}</h4></div>
               <div style={styles.grid}>
                 {[...Array(9)].map((_, i) => {
                   const p = allPicks.find(x => x.inn2Card === i);
-                  const isMe = p?.userId === (testName ? `test_${testName.replace(/\s/g, '_')}` : user.uid);
+                  const isMe = p?.userId === effectiveID;
                   return <div key={i} onClick={() => !p && lockCard(2, i)} style={{...styles.cardComplex, background: p ? (isMe ? '#ff3d5a' : 'rgba(255,61,90,0.1)') : '#13141f', borderColor: p ? '#ff3d5a' : '#252638'}}>{p ? <><div style={{...styles.cardNumber, color: isMe ? '#000' : '#ff3d5a'}}>#{p.inn2Num}</div><div style={{...styles.cardFriend, color: isMe ? '#000' : '#eee'}}>{p.userName.split(' ')[0]}</div></> : <div style={{fontSize: '24px'}}>🏏</div>}</div>
                 })}
               </div>
@@ -345,6 +380,7 @@ const styles = {
   btnAction: { flex: 1, background:'#f0c040', color:'#000', padding:'12px', border:'none', borderRadius:'8px', fontWeight:'bold' },
   btnAdmin: { width: '100%', padding: '12px', background: '#f0c040', border: 'none', borderRadius: '8px', fontWeight: 'bold', marginBottom: '15px' },
   btnPrimary: { background: 'linear-gradient(135deg, #ff5f1f, #d44a0f)', color: 'white', padding: '15px 45px', border: 'none', borderRadius: '100px', fontWeight: 'bold', fontSize: '14px' },
+  btnNavigate: { background: '#1fd18a', color: '#000', padding: '12px 30px', border: 'none', borderRadius: '8px', fontWeight: '900', fontSize: '13px', letterSpacing:'1px', cursor: 'pointer', boxShadow: '0 4px 15px rgba(31, 209, 138, 0.3)' },
   podiumContainer: { display: 'flex', justifyContent: 'center', alignItems: 'flex-end', gap: '12px', margin: '35px 0', height: '190px' },
   pod: { flex: 1, background: '#13141f', border: '1px solid #252638', borderRadius: '20px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' },
   podName: { fontWeight: 'bold', fontSize: '14px', marginTop: '12px' },
