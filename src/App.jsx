@@ -19,8 +19,6 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [adminPull, setAdminPull] = useState(20);
   const [totalCredits, setTotalCredits] = useState(null);
-
-  // ADMIN STATE: Identity and Reveal Toggle
   const [adminIdentity, setAdminIdentity] = useState({ id: "", name: "" });
 
   useEffect(() => {
@@ -49,9 +47,7 @@ function App() {
       try {
         const res = await fetch(`https://api.cricapi.com/v1/metadata?apikey=${key}`);
         const data = await res.json();
-        if (data.status === 'success') {
-          sum += (data.data.hitsLimit - data.data.hitsUsed);
-        }
+        if (data.status === 'success') sum += (data.data.hitsLimit - data.data.hitsUsed);
       } catch (e) { console.error(e); }
     }
     setTotalCredits(sum);
@@ -68,11 +64,17 @@ function App() {
     if (snap.exists()) {
       const allMatches = snap.data().list;
       const todayIST = new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
-      const filtered = allMatches.filter(m => {
-        const matchDateIST = new Date(m.dateTimeGMT.replace(' ', 'T') + 'Z').toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
-        return matchDateIST === todayIST;
-      });
-      setMatches(filtered);
+
+      // Admin sees everything, users only see Today
+      if (auth.currentUser?.email === ADMIN_EMAIL) {
+        setMatches(allMatches);
+      } else {
+        const filtered = allMatches.filter(m => {
+          const mDate = new Date(m.dateTimeGMT.replace(' ', 'T') + 'Z').toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
+          return mDate === todayIST;
+        });
+        setMatches(filtered);
+      }
     }
   };
 
@@ -93,18 +95,23 @@ function App() {
   };
 
   const updateSeasonPoint = async (userId, newVal) => {
-    try {
-      await setDoc(doc(db, "users", userId), { totalPoints: parseInt(newVal) || 0 }, { merge: true });
-      loadLeaderboard();
-    } catch (e) { console.error(e); }
+    await setDoc(doc(db, "users", userId), { totalPoints: parseInt(newVal) || 0 }, { merge: true });
+    loadLeaderboard();
   };
 
   const deletePick = async (pickId) => {
-    if (window.confirm("Delete this pick?")) {
-      try {
-        await deleteDoc(doc(db, "match_picks", pickId));
-      } catch (e) { console.error(e); }
-    }
+    if (window.confirm("Delete this pick?")) await deleteDoc(doc(db, "match_picks", pickId));
+  };
+
+  const resetCurrentMatch = async () => {
+    if (!selectedMatch || user.email !== ADMIN_EMAIL) return;
+    if (!window.confirm("Clear all selections for THIS match?")) return;
+    const batch = writeBatch(db);
+    const q = query(collection(db, "match_picks"), where("matchId", "==", selectedMatch.id));
+    const snap = await getDocs(q);
+    snap.forEach(d => batch.delete(d.ref));
+    await batch.commit();
+    alert("Match Selections Cleared.");
   };
 
   const adminFetchMatches = async () => {
@@ -154,7 +161,6 @@ function App() {
       const s2 = matchObj.scores.inn2.find(s => s.pos === p.inn2Num);
       return { ...p, p1Name: s1?.name || "TBD", p2Name: s2?.name || "TBD", r1: s1?.runs || 0, r2: s2?.runs || 0, total: (s1?.runs || 0) + (s2?.runs || 0) };
     }).sort((a,b) => b.total - a.total);
-
     const pullUsed = matchObj.finalPull || adminPull;
     const remPot = (picksArr.length * pullUsed) - pullUsed; 
     let rank = 0;
@@ -179,19 +185,17 @@ function App() {
   };
 
   const submitToSeason = async () => {
-    const results = calculateFinalPoints(selectedMatch, allPicks);
+    const res = calculateFinalPoints(selectedMatch, allPicks);
     if (user.email !== ADMIN_EMAIL || !selectedMatch?.scores || selectedMatch?.settled) return;
-    if (!window.confirm(`Settle match?`)) return;
-    for (let r of results) {
-      await setDoc(doc(db, "users", r.userId), { name: r.userName, totalPoints: increment(r.net) }, { merge: true });
-    }
+    if (!window.confirm(`Submit results?`)) return;
+    for (let r of res) await setDoc(doc(db, "users", r.userId), { name: r.userName, totalPoints: increment(r.net) }, { merge: true });
     await setDoc(doc(db, "active_matches", selectedMatch.id), { settled: true, finalPull: adminPull, matchName: selectedMatch.name, dateText: formatIST(selectedMatch.dateTimeGMT), updatedAt: new Date() }, { merge: true });
     window.location.reload();
   };
 
   const nuclearReset = async () => {
     if (user.email !== ADMIN_EMAIL) return;
-    if (!window.confirm("ERASE ALL?")) return;
+    if (!window.confirm("☢️ NUCLEAR RESET: ERASE ALL?")) return;
     const cols = ['match_picks', 'active_matches', 'users'];
     for (const c of cols) {
       const snap = await getDocs(collection(db, c));
@@ -230,7 +234,7 @@ function App() {
   const userHasFinished = allPicks.find(p => p.userId === effectiveID)?.inn1Card !== undefined && 
                           allPicks.find(p => p.userId === effectiveID)?.inn2Card !== undefined;
 
-  if (loading) return <div style={styles.center}>🏏 LOADING...</div>;
+  if (loading) return <div style={styles.center}>🏏 PREPARING STADIUM...</div>;
 
   return (
     <div style={styles.container}>
@@ -238,14 +242,12 @@ function App() {
         @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Rajdhani:wght@400;600;700&display=swap');
         body { font-family: 'Rajdhani', sans-serif; background: #07080f; color: #eee; }
         .pill { background: rgba(255,255,255,0.05); padding: 4px 12px; border-radius: 100px; display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: bold; border: 1px solid rgba(255,255,255,0.1); }
-        .match-history-card { background: #13141f; border: 1px solid #252638; border-radius: 15px; padding: 20px; margin-bottom: 15px; cursor: pointer; }
+        .match-history-card { background: #13141f; border: 1px solid #252638; border-radius: 15px; padding: 20px; margin-bottom: 15px; cursor: pointer; transition: 0.3s; }
+        .match-history-card:hover { border-color: #f0c040; box-shadow: 0 0 20px rgba(240,192,64,0.1); }
       `}</style>
 
       {!user ? (
-        <div style={styles.authPage}>
-            <h1 style={styles.heroTitle}>ટ્રાફિકવાળાનો સટ્ટો</h1>
-            <button onClick={loginWithGoogle} style={styles.btnPrimary}>Login to Enter</button>
-        </div>
+        <div style={styles.authPage}><h1 style={styles.heroTitle}>ટ્રાફિકવાળાનો સટ્ટો</h1><button onClick={loginWithGoogle} style={styles.btnPrimary}>Login</button></div>
       ) : (
         <>
           <nav style={styles.tabs}>
@@ -258,86 +260,59 @@ function App() {
           {tab === 'matches' && (
             <section style={{padding: '0 15px'}}>
               {user.email === ADMIN_EMAIL && <button onClick={adminFetchMatches} style={styles.btnAdmin}>ADMIN: SYNC FIXTURES</button>}
-              {matches.length === 0 ? (
-                <div style={{textAlign:'center', marginTop:'50px', color:'#52536e'}}>No matches scheduled for today.</div>
-              ) : matches.map(m => (
-                <div key={m.id} onClick={() => handleSelectMatch(m)} style={styles.matchCard}>
-                  <div style={styles.matchMeta}>T20 SERIES • TODAY</div><b style={styles.matchTitle}>{m.name}</b><div style={styles.matchTime}>IST: {formatIST(m.dateTimeGMT)}</div>
-                </div>
-              ))}
+              {matches.length === 0 ? <div style={{textAlign:'center', marginTop:'50px', color:'#52536e'}}>No matches found.</div> : 
+                matches.map(m => {
+                  const todayStr = new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
+                  const matchStr = new Date(m.dateTimeGMT.replace(' ', 'T') + 'Z').toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
+                  const isToday = todayStr === matchStr;
+                  return (
+                    <div key={m.id} onClick={() => handleSelectMatch(m)} style={{...styles.matchCard, border: isToday ? '1px solid #1fd18a' : '1px solid #252638', boxShadow: isToday ? '0 0 15px rgba(31,209,138,0.1)' : 'none'}}>
+                      <div style={styles.matchMeta}>{isToday ? '🔥 PLAYING TODAY' : 'UPCOMING / PAST'}</div>
+                      <b style={styles.matchTitle}>{m.name}</b>
+                      <div style={styles.matchTime}>{formatIST(m.dateTimeGMT)}</div>
+                    </div>
+                  );
+                })}
             </section>
           )}
 
           {tab === 'play' && selectedMatch && (
             <section style={{padding: '0 15px'}}>
-              {/* UPDATED ADMIN IDENTITY SELECTOR */}
               {user.email === ADMIN_EMAIL && !selectedMatch.settled && (
-                <div style={styles.testPanel}>
-                  <span style={{fontSize:'10px', fontWeight:'900', color:'#f0c040', letterSpacing:'1px'}}>ACT AS:</span>
-                  <select 
-                    style={styles.testSelect} 
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      if (!val) setAdminIdentity({ id: "", name: "" });
-                      else {
-                        const [id, name] = val.split('|');
-                        setAdminIdentity({ id, name });
-                      }
-                    }}
-                  >
-                    <option value="">REAL PLAY (Hidden)</option>
-                    {leaderboard.map(u => <option key={u.id} value={`${u.id}|${u.name}`}>{u.name}</option>)}
-                  </select>
+                <div style={{display:'flex', gap:'10px', marginBottom:'20px'}}>
+                  <div style={styles.testPanel}>
+                    <span style={{fontSize:'10px', fontWeight:'900', color:'#f0c040'}}>ACT AS:</span>
+                    <select style={styles.testSelect} onChange={(e) => { const v = e.target.value; if (!v) setAdminIdentity({id:"", name:""}); else { const [i, n] = v.split('|'); setAdminIdentity({id:i, name:n}); }}}>
+                      <option value="">REAL PLAY (Hidden)</option>
+                      {leaderboard.map(u => <option key={u.id} value={`${u.id}|${u.name}`}>{u.name}</option>)}
+                    </select>
+                  </div>
+                  <button onClick={resetCurrentMatch} style={styles.btnResetSmall}>RESET MATCH</button>
                 </div>
               )}
 
               <h3 style={styles.arenaTitle}>{selectedMatch.name}</h3>
-              
+              {selectedMatch.settled && <div style={styles.lockBadge}>🔒 MATCH ARCHIVED</div>}
+
               <div style={styles.teamHeaderBox}><span style={styles.teamLabel}>TEAM GREEN</span><h4 style={{...styles.teamNameText, color:'#1fd18a'}}>{selectedMatch.t1}</h4></div>
               <div style={styles.grid}>
                 {[...Array(9)].map((_, i) => {
                   const p = allPicks.find(x => x.inn1Card === i);
                   const isMe = p?.userId === effectiveID;
-                  // Reveal number if admin has selected an identity
                   const showReveal = !p && adminIdentity.id !== "";
-                  return (
-                    <div key={i} onClick={() => !p && lockCard(1, i)} style={{...styles.cardComplex, background: p ? (isMe ? '#1fd18a' : 'rgba(31,209,138,0.1)') : '#13141f', borderColor: p ? '#1fd18a' : '#252638'}}>
-                      {p ? (
-                        <><div style={{...styles.cardNumber, color: isMe ? '#000' : '#1fd18a'}}>#{p.inn1Num}</div><div style={{...styles.cardFriend, color: isMe ? '#000' : '#eee'}}>{p.userName.split(' ')[0]}</div></>
-                      ) : (
-                        <div style={{fontSize: '24px', opacity: showReveal ? 1 : 1}}>
-                          {showReveal ? <span style={{color:'#f0c040', fontSize:'18px'}}>#{matchDeck.inn1Deck[i]}</span> : '🏏'}
-                        </div>
-                      )}
-                    </div>
-                  );
+                  return <div key={i} onClick={() => !p && lockCard(1, i)} style={{...styles.cardComplex, background: p ? (isMe ? '#1fd18a' : 'rgba(31,209,138,0.1)') : '#13141f', borderColor: p ? '#1fd18a' : '#252638'}}>{p ? <><div style={{...styles.cardNumber, color: isMe ? '#000' : '#1fd18a'}}>#{p.inn1Num}</div><div style={{...styles.cardFriend, color: isMe ? '#000' : '#eee'}}>{p.userName.split(' ')[0]}</div></> : (showReveal ? <span style={{color:'#f0c040', fontSize:'22px', fontFamily:'Bebas Neue'}}>#{matchDeck.inn1Deck[i]}</span> : <div style={{fontSize: '24px'}}>🏏</div>)}</div>
                 })}
               </div>
 
-              {userHasFinished && (
-                <div style={{display:'flex', justifyContent:'center', margin:'30px 0'}}>
-                   <button onClick={() => setTab('results')} style={styles.btnNavigate}>VIEW LIVE RESULTS →</button>
-                </div>
-              )}
+              {userHasFinished && <div style={{display:'flex', justifyContent:'center', margin:'30px 0'}}><button onClick={() => setTab('results')} style={styles.btnNavigate}>VIEW LIVE RESULTS →</button></div>}
 
               <div style={{...styles.teamHeaderBox, marginTop: userHasFinished ? '0' : '30px'}}><span style={styles.teamLabel}>TEAM RED</span><h4 style={{...styles.teamNameText, color:'#ff3d5a'}}>{selectedMatch.t2}</h4></div>
               <div style={styles.grid}>
                 {[...Array(9)].map((_, i) => {
                   const p = allPicks.find(x => x.inn2Card === i);
                   const isMe = p?.userId === effectiveID;
-                  // Reveal number if admin has selected an identity
                   const showReveal = !p && adminIdentity.id !== "";
-                  return (
-                    <div key={i} onClick={() => !p && lockCard(2, i)} style={{...styles.cardComplex, background: p ? (isMe ? '#ff3d5a' : 'rgba(255,61,90,0.1)') : '#13141f', borderColor: p ? '#ff3d5a' : '#252638'}}>
-                      {p ? (
-                        <><div style={{...styles.cardNumber, color: isMe ? '#000' : '#ff3d5a'}}>#{p.inn2Num}</div><div style={{...styles.cardFriend, color: isMe ? '#000' : '#eee'}}>{p.userName.split(' ')[0]}</div></>
-                      ) : (
-                        <div style={{fontSize: '24px', opacity: showReveal ? 1 : 1}}>
-                          {showReveal ? <span style={{color:'#f0c040', fontSize:'18px'}}>#{matchDeck.inn2Deck[i]}</span> : '🏏'}
-                        </div>
-                      )}
-                    </div>
-                  );
+                  return <div key={i} onClick={() => !p && lockCard(2, i)} style={{...styles.cardComplex, background: p ? (isMe ? '#ff3d5a' : 'rgba(255,61,90,0.1)') : '#13141f', borderColor: p ? '#ff3d5a' : '#252638'}}>{p ? <><div style={{...styles.cardNumber, color: isMe ? '#000' : '#ff3d5a'}}>#{p.inn2Num}</div><div style={{...styles.cardFriend, color: isMe ? '#000' : '#eee'}}>{p.userName.split(' ')[0]}</div></> : (showReveal ? <span style={{color:'#f0c040', fontSize:'22px', fontFamily:'Bebas Neue'}}>#{matchDeck.inn2Deck[i]}</span> : <div style={{fontSize: '24px'}}>🏏</div>)}</div>
                 })}
               </div>
             </section>
@@ -354,8 +329,9 @@ function App() {
                 ))}
               </div>
               <div style={styles.tableWrap}>
+                <div style={styles.tableHeader}><div style={styles.colF}>FRIEND</div><div style={styles.colInn}>PLAYER 1</div><div style={styles.colR}>RUNS</div><div style={styles.colInn}>PLAYER 2</div><div style={styles.colR}>RUNS</div><div style={styles.colTot}>TOTAL</div></div>
                 {calculateFinalPoints(selectedMatch, allPicks).map((p, i) => (
-                  <div key={i} style={styles.tableRow}><div style={styles.colF}>{p.userName.split(' ')[0]}</div><div style={styles.colInn}><span style={{color:'#1fd18a'}}>#{p.inn1Num}</span> {p.p1Name}</div><div style={styles.colR}>{p.r1}</div><div style={styles.colInn}><span style={{color:'#ff3d5a'}}>#{p.inn2Num}</span> {p.p2Name}</div><div style={styles.colR}>{p.r2}</div><div style={{...styles.colTot, color:'#f0c040'}}>{p.total}</div></div>
+                  <div key={i} style={styles.tableRow}><div style={styles.colF}>{p.userName.split(' ')[0]}</div><div style={styles.colInn}><span style={{color:'#1fd18a'}}>#{p.inn1Num}</span> <span style={styles.playerName}>{p.p1Name}</span></div><div style={styles.colR}>{p.r1}</div><div style={styles.colInn}><span style={{color:'#ff3d5a'}}>#{p.inn2Num}</span> <span style={styles.playerName}>{p.p2Name}</span></div><div style={styles.colR}>{p.r2}</div><div style={{...styles.colTot, color:'#f0c040'}}>{p.total}</div></div>
                 ))}
               </div>
             </section>
@@ -363,26 +339,47 @@ function App() {
 
           {tab === 'season' && (
             <section style={{padding: '0 15px'}}>
-              <h2 style={styles.sectionHeader}>🏆 STANDINGS</h2>
-              <div style={styles.tableWrap}>{leaderboard.map((u, i) => (<div key={i} style={styles.tableRow}><div style={{flex:1, color:'#52536e'}}>0{i+1}</div><div style={{flex:3, fontWeight:'bold'}}>{u.name}</div><div style={{flex:2, textAlign:'right', color: u.totalPoints >= 0 ? '#1fd18a' : '#ff3d5a', fontSize:'22px', fontFamily:'Bebas Neue'}}>{u.totalPoints > 0 ? '+' : ''}{u.totalPoints}</div></div>))}</div>
-              <h2 style={{...styles.sectionHeader, marginTop:'40px'}}>📋 HISTORY</h2>
+              <h2 style={styles.sectionHeader}>🏆 SEASON STANDINGS</h2>
+              <div style={{...styles.tableWrap, marginBottom:'40px', background:'#0e0f1a'}}>
+                 {leaderboard.map((u, i) => (
+                   <div key={i} style={styles.tableRow}><div style={{flex:1, color:'#52536e'}}>0{i+1}</div><div style={{flex:3, fontWeight:'bold', color: i === 0 ? '#f0c040' : '#eee'}}>{u.name}</div><div style={{flex:2, textAlign:'right', color: u.totalPoints >= 0 ? '#1fd18a' : '#ff3d5a', fontSize:'22px', fontFamily:'Bebas Neue'}}>{u.totalPoints > 0 ? '+' : ''}{u.totalPoints}</div></div>
+                 ))}
+              </div>
+              <h2 style={styles.sectionHeader}>📋 MATCH HISTORY</h2>
               {matchHistory.map((m, i) => {
                 const res = calculateFinalPoints(m, m.allPicks);
-                return (<div key={i} className="match-history-card" onClick={() => { setSelectedMatch(m); setTab('results'); }}><div style={{display:'flex', justifyContent:'space-between', marginBottom:'12px', borderBottom:'1px solid #252638', paddingBottom:'8px'}}><span style={{fontWeight:'bold'}}>🏏 {m.matchName}</span><span style={{fontSize:'11px', color:'#7a7b98'}}>{m.dateText} • Pull: {m.finalPull}</span></div><div style={{display:'flex', gap:'8px', marginBottom:'12px'}}><div className="pill" style={{borderColor:'#f0c040'}}>🥇 {res[0]?.userName}</div><div className="pill" style={{borderColor:'#c0c0c0'}}>🥈 {res[1]?.userName}</div><div className="pill" style={{borderColor:'#cd7f32'}}>🥉 {res[2]?.userName}</div></div></div>);
+                return (
+                  <div key={i} className="match-history-card" onClick={() => { setSelectedMatch(m); setTab('results'); }}>
+                    <div style={{display:'flex', justifyContent:'space-between', marginBottom:'12px', borderBottom:'1px solid #252638', paddingBottom:'8px'}}>
+                        <span style={{fontWeight:'bold', fontSize:'15px'}}>🏏 {m.matchName}</span>
+                        <span style={{fontSize:'11px', color:'#7a7b98'}}>{m.dateText} • Pull: {m.finalPull}</span>
+                    </div>
+                    <div style={{display:'flex', gap:'8px', marginBottom:'12px'}}>
+                        <div className="pill" style={{borderColor:'#f0c040'}}>🥇 {res[0]?.userName}</div>
+                        <div className="pill" style={{borderColor:'#c0c0c0'}}>🥈 {res[1]?.userName}</div>
+                        <div className="pill" style={{borderColor:'#cd7f32'}}>🥉 {res[2]?.userName}</div>
+                    </div>
+                    <div style={{display:'flex', flexWrap:'wrap', gap:'10px', fontSize:'11px', color:'#52536e'}}>
+                        {res.map((p, idx) => (<span key={idx}>{p.userName}: <span style={{color: p.net > 0 ? '#1fd18a' : p.net === 0 ? '#eee' : '#ff3d5a'}}>{p.net > 0 ? '+' : ''}{p.net}</span>{idx < res.length - 1 ? ' •' : ''}</span>))}
+                    </div>
+                  </div>
+                );
               })}
             </section>
           )}
 
           {tab === 'data' && user.email === ADMIN_EMAIL && (
             <section style={{padding: '0 15px'}}>
-              <h2 style={styles.sectionHeader}>⚙️ DATA</h2>
+              <h2 style={styles.sectionHeader}>⚙️ DATA CONTROL</h2>
               <div style={styles.adminDataBox}>
+                <h4 style={{color:'#f0c040', marginBottom:'10px'}}>Season Points</h4>
                 {leaderboard.map(u => (<div key={u.id} style={styles.adminDataRow}><span>{u.name}</span><input type="number" defaultValue={u.totalPoints} onBlur={(e) => updateSeasonPoint(u.id, e.target.value)} style={styles.dataInput} /></div>))}
               </div>
               <div style={{...styles.adminDataBox, marginTop:'20px'}}>
+                <h4 style={{color:'#f0c040', marginBottom:'10px'}}>Active Match Picks</h4>
                 {allPicks.map((p, idx) => (<div key={idx} style={styles.adminDataRow}><span>{p.userName}</span><button onClick={() => deletePick(`${selectedMatch.id}_${p.userId}`)} style={{background:'#ff3d5a', color:'#fff', border:'none', borderRadius:'4px', padding:'4px 10px', fontSize:'10px'}}>DELETE</button></div>))}
               </div>
-              <button onClick={nuclearReset} style={{...styles.btnAdmin, marginTop:'20px', background:'#ff3d5a'}}>☢️ NUCLEAR RESET</button>
+              <button onClick={nuclearReset} style={{...styles.btnAdmin, marginTop:'30px', background:'#ff3d5a'}}>☢️ NUCLEAR RESET SEASON</button>
             </section>
           )}
         </>
@@ -397,8 +394,8 @@ const styles = {
   heroTitle: { fontSize: '48px', fontFamily: 'Bebas Neue', color: '#f0c040', marginBottom: '20px' },
   authPage: { height: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' },
   tabs: { display: 'flex', background: '#0e0f1a', borderBottom: '1px solid #252638', position: 'sticky', top: 0, zIndex: 100 },
-  tabOn: { flex: 1, padding: '15px', background: '#ff5f1f', border: 'none', color: '#fff', fontWeight: 'bold', fontSize: '11px' },
-  tabOff: { flex: 1, padding: '15px', background: 'transparent', border: 'none', color: '#52536e', fontSize: '11px' },
+  tabOn: { flex: 1, padding: '15px', background: '#ff5f1f', border: 'none', color: '#fff', fontWeight: 'bold', fontSize: '11px', letterSpacing:'1px' },
+  tabOff: { flex: 1, padding: '15px', background: 'transparent', border: 'none', color: '#52536e', fontSize: '11px', letterSpacing:'1px' },
   matchCard: { background: '#13141f', padding: '20px', borderRadius: '15px', border: '1px solid #252638', marginBottom:'12px', cursor:'pointer' },
   matchMeta: { color: '#52536e', fontSize: '10px', fontWeight: 'bold', marginBottom: '6px' },
   matchTitle: { fontSize: '18px' },
@@ -418,11 +415,13 @@ const styles = {
   btnAdmin: { width: '100%', padding: '12px', background: '#f0c040', border: 'none', borderRadius: '8px', fontWeight: 'bold', marginBottom: '15px' },
   btnPrimary: { background: 'linear-gradient(135deg, #ff5f1f, #d44a0f)', color: 'white', padding: '15px 45px', border: 'none', borderRadius: '100px', fontWeight: 'bold', fontSize: '14px' },
   btnNavigate: { background: '#1fd18a', color: '#000', padding: '12px 30px', border: 'none', borderRadius: '8px', fontWeight: '900', fontSize: '13px', letterSpacing:'1px', cursor: 'pointer', boxShadow: '0 4px 15px rgba(31, 209, 138, 0.3)' },
+  btnResetSmall: { background:'#ff3d5a', color:'#fff', border:'none', borderRadius:'10px', padding:'0 15px', fontWeight:'bold', fontSize:'11px' },
   podiumContainer: { display: 'flex', justifyContent: 'center', alignItems: 'flex-end', gap: '12px', margin: '35px 0', height: '190px' },
   pod: { flex: 1, background: '#13141f', border: '1px solid #252638', borderRadius: '20px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' },
   podName: { fontWeight: 'bold', fontSize: '14px', marginTop: '12px' },
   podScore: { fontSize: '42px', color: '#f0c040', fontFamily: 'Bebas Neue' },
   tableWrap: { background: '#13141f', borderRadius: '20px', overflow: 'hidden', border: '1px solid #252638' },
+  tableHeader: { display: 'flex', background: '#1a1b28', padding: '15px 12px', fontSize: '11px', color: '#7a7b98', fontWeight: 'bold' },
   tableRow: { display: 'flex', padding: '18px 12px', fontSize: '13px', borderBottom: '1px solid #252638', alignItems: 'center' },
   colF: { flex: 1.5, fontWeight: 'bold' },
   colInn: { flex: 3 },
@@ -430,10 +429,11 @@ const styles = {
   colR: { width: '45px', textAlign: 'center' },
   colTot: { width: '55px', textAlign: 'center', fontSize: '18px', fontFamily: 'Bebas Neue' },
   sectionHeader: { color: '#f0c040', fontFamily: 'Bebas Neue', letterSpacing: '3px', marginBottom: '15px', marginTop:'20px' },
+  lockBadge: { background: 'rgba(255,255,255,0.05)', color: '#7a7b98', fontSize: '11px', textAlign: 'center', padding: '6px', borderRadius: '100px', border: '1px solid #252638', marginBottom: '15px' },
   adminDataBox: { background: '#13141f', padding: '20px', borderRadius: '15px', border: '1px solid #252638' },
   adminDataRow: { display: 'flex', justifyContent: 'space-between', padding: '12px 0', borderBottom: '1px solid #1a1b28', alignItems:'center' },
   dataInput: { background:'#000', color:'#f0c040', border:'1px solid #333', padding:'6px', borderRadius:'6px', width:'70px', textAlign:'center', fontWeight:'bold' },
-  testPanel: { background:'rgba(240,192,64,0.05)', padding:'12px', borderRadius:'10px', border:'1px dashed #f0c040', marginBottom:'20px', display:'flex', gap:'12px', alignItems:'center' },
+  testPanel: { flex:1, background:'rgba(240,192,64,0.05)', padding:'10px', borderRadius:'10px', border:'1px dashed #f0c040', display:'flex', gap:'12px', alignItems:'center' },
   testSelect: { flex:1, background:'#000', color:'#fff', border:'1px solid #333', padding:'10px', borderRadius:'8px', fontSize:'13px', fontWeight:'700' }
 };
 
