@@ -18,8 +18,10 @@ function App() {
   const [matchHistory, setMatchHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [adminPull, setAdminPull] = useState(20);
-  const [testName, setTestName] = useState(""); 
   const [totalCredits, setTotalCredits] = useState(null);
+
+  // ADMIN STATE: Identity and Reveal Toggle
+  const [adminIdentity, setAdminIdentity] = useState({ id: "", name: "" });
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
@@ -65,14 +67,11 @@ function App() {
     const snap = await getDoc(doc(db, "system", "match_cache"));
     if (snap.exists()) {
       const allMatches = snap.data().list;
-      
-      // Filter for matches played TODAY (IST)
       const todayIST = new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
       const filtered = allMatches.filter(m => {
         const matchDateIST = new Date(m.dateTimeGMT.replace(' ', 'T') + 'Z').toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
         return matchDateIST === todayIST;
       });
-      
       setMatches(filtered);
     }
   };
@@ -117,7 +116,7 @@ function App() {
         if (data.status === 'success') {
           const list = (data.data.matchList || []);
           await setDoc(doc(db, "system", "match_cache"), { list, updatedAt: serverTimestamp() });
-          loadMatchCache(); // Re-trigger local filter
+          loadMatchCache();
           fetchTotalCredits();
           return;
         }
@@ -220,15 +219,14 @@ function App() {
 
   const lockCard = async (inn, idx) => {
     if (selectedMatch?.settled) return;
-    const effectiveUID = testName ? `test_${testName.replace(/\s/g, '_')}` : user.uid;
-    const effectiveName = testName || user.displayName;
+    const effectiveUID = adminIdentity.id || user.uid;
+    const effectiveName = adminIdentity.name || user.displayName;
     if (allPicks.find(p => p.userId === effectiveUID)?.[`inn${inn}Card`] !== undefined) return;
     if (allPicks.some(p => p[`inn${inn}Card`] === idx)) return;
     await setDoc(doc(db, "match_picks", `${selectedMatch.id}_${effectiveUID}`), { userId: effectiveUID, userName: effectiveName, matchId: selectedMatch.id, [`inn${inn}Card`]: idx, [`inn${inn}Num`]: matchDeck[`inn${inn}Deck`][idx], timestamp: serverTimestamp() }, { merge: true });
   };
 
-  // Logic to check if BOTH picks are done for the current identity
-  const effectiveID = testName ? `test_${testName.replace(/\s/g, '_')}` : user?.uid;
+  const effectiveID = adminIdentity.id || user?.uid;
   const userHasFinished = allPicks.find(p => p.userId === effectiveID)?.inn1Card !== undefined && 
                           allPicks.find(p => p.userId === effectiveID)?.inn2Card !== undefined;
 
@@ -272,35 +270,74 @@ function App() {
 
           {tab === 'play' && selectedMatch && (
             <section style={{padding: '0 15px'}}>
-              {user.email === ADMIN_EMAIL && !selectedMatch.settled && <div style={styles.testPanel}><input placeholder="TEST NAME" value={testName} onChange={e => setTestName(e.target.value)} style={styles.testInput}/><button onClick={() => setTestName("")} style={styles.testBtn}>CLEAR</button></div>}
+              {/* UPDATED ADMIN IDENTITY SELECTOR */}
+              {user.email === ADMIN_EMAIL && !selectedMatch.settled && (
+                <div style={styles.testPanel}>
+                  <span style={{fontSize:'10px', fontWeight:'900', color:'#f0c040', letterSpacing:'1px'}}>ACT AS:</span>
+                  <select 
+                    style={styles.testSelect} 
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (!val) setAdminIdentity({ id: "", name: "" });
+                      else {
+                        const [id, name] = val.split('|');
+                        setAdminIdentity({ id, name });
+                      }
+                    }}
+                  >
+                    <option value="">REAL PLAY (Hidden)</option>
+                    {leaderboard.map(u => <option key={u.id} value={`${u.id}|${u.name}`}>{u.name}</option>)}
+                  </select>
+                </div>
+              )}
+
               <h3 style={styles.arenaTitle}>{selectedMatch.name}</h3>
               
-              {/* TEAM 1 */}
               <div style={styles.teamHeaderBox}><span style={styles.teamLabel}>TEAM GREEN</span><h4 style={{...styles.teamNameText, color:'#1fd18a'}}>{selectedMatch.t1}</h4></div>
               <div style={styles.grid}>
                 {[...Array(9)].map((_, i) => {
                   const p = allPicks.find(x => x.inn1Card === i);
                   const isMe = p?.userId === effectiveID;
-                  return <div key={i} onClick={() => !p && lockCard(1, i)} style={{...styles.cardComplex, background: p ? (isMe ? '#1fd18a' : 'rgba(31,209,138,0.1)') : '#13141f', borderColor: p ? '#1fd18a' : '#252638'}}>{p ? <><div style={{...styles.cardNumber, color: isMe ? '#000' : '#1fd18a'}}>#{p.inn1Num}</div><div style={{...styles.cardFriend, color: isMe ? '#000' : '#eee'}}>{p.userName.split(' ')[0]}</div></> : <div style={{fontSize: '24px'}}>🏏</div>}</div>
+                  // Reveal number if admin has selected an identity
+                  const showReveal = !p && adminIdentity.id !== "";
+                  return (
+                    <div key={i} onClick={() => !p && lockCard(1, i)} style={{...styles.cardComplex, background: p ? (isMe ? '#1fd18a' : 'rgba(31,209,138,0.1)') : '#13141f', borderColor: p ? '#1fd18a' : '#252638'}}>
+                      {p ? (
+                        <><div style={{...styles.cardNumber, color: isMe ? '#000' : '#1fd18a'}}>#{p.inn1Num}</div><div style={{...styles.cardFriend, color: isMe ? '#000' : '#eee'}}>{p.userName.split(' ')[0]}</div></>
+                      ) : (
+                        <div style={{fontSize: '24px', opacity: showReveal ? 1 : 1}}>
+                          {showReveal ? <span style={{color:'#f0c040', fontSize:'18px'}}>#{matchDeck.inn1Deck[i]}</span> : '🏏'}
+                        </div>
+                      )}
+                    </div>
+                  );
                 })}
               </div>
 
-              {/* CENTER BUTTON FOR NAVIGATION */}
               {userHasFinished && (
                 <div style={{display:'flex', justifyContent:'center', margin:'30px 0'}}>
-                   <button onClick={() => setTab('results')} style={styles.btnNavigate}>
-                     VIEW LIVE RESULTS →
-                   </button>
+                   <button onClick={() => setTab('results')} style={styles.btnNavigate}>VIEW LIVE RESULTS →</button>
                 </div>
               )}
 
-              {/* TEAM 2 */}
               <div style={{...styles.teamHeaderBox, marginTop: userHasFinished ? '0' : '30px'}}><span style={styles.teamLabel}>TEAM RED</span><h4 style={{...styles.teamNameText, color:'#ff3d5a'}}>{selectedMatch.t2}</h4></div>
               <div style={styles.grid}>
                 {[...Array(9)].map((_, i) => {
                   const p = allPicks.find(x => x.inn2Card === i);
                   const isMe = p?.userId === effectiveID;
-                  return <div key={i} onClick={() => !p && lockCard(2, i)} style={{...styles.cardComplex, background: p ? (isMe ? '#ff3d5a' : 'rgba(255,61,90,0.1)') : '#13141f', borderColor: p ? '#ff3d5a' : '#252638'}}>{p ? <><div style={{...styles.cardNumber, color: isMe ? '#000' : '#ff3d5a'}}>#{p.inn2Num}</div><div style={{...styles.cardFriend, color: isMe ? '#000' : '#eee'}}>{p.userName.split(' ')[0]}</div></> : <div style={{fontSize: '24px'}}>🏏</div>}</div>
+                  // Reveal number if admin has selected an identity
+                  const showReveal = !p && adminIdentity.id !== "";
+                  return (
+                    <div key={i} onClick={() => !p && lockCard(2, i)} style={{...styles.cardComplex, background: p ? (isMe ? '#ff3d5a' : 'rgba(255,61,90,0.1)') : '#13141f', borderColor: p ? '#ff3d5a' : '#252638'}}>
+                      {p ? (
+                        <><div style={{...styles.cardNumber, color: isMe ? '#000' : '#ff3d5a'}}>#{p.inn2Num}</div><div style={{...styles.cardFriend, color: isMe ? '#000' : '#eee'}}>{p.userName.split(' ')[0]}</div></>
+                      ) : (
+                        <div style={{fontSize: '24px', opacity: showReveal ? 1 : 1}}>
+                          {showReveal ? <span style={{color:'#f0c040', fontSize:'18px'}}>#{matchDeck.inn2Deck[i]}</span> : '🏏'}
+                        </div>
+                      )}
+                    </div>
+                  );
                 })}
               </div>
             </section>
@@ -389,15 +426,15 @@ const styles = {
   tableRow: { display: 'flex', padding: '18px 12px', fontSize: '13px', borderBottom: '1px solid #252638', alignItems: 'center' },
   colF: { flex: 1.5, fontWeight: 'bold' },
   colInn: { flex: 3 },
+  playerName: { fontSize: '10px', marginLeft: '6px', color: '#52536e' },
   colR: { width: '45px', textAlign: 'center' },
   colTot: { width: '55px', textAlign: 'center', fontSize: '18px', fontFamily: 'Bebas Neue' },
   sectionHeader: { color: '#f0c040', fontFamily: 'Bebas Neue', letterSpacing: '3px', marginBottom: '15px', marginTop:'20px' },
   adminDataBox: { background: '#13141f', padding: '20px', borderRadius: '15px', border: '1px solid #252638' },
   adminDataRow: { display: 'flex', justifyContent: 'space-between', padding: '12px 0', borderBottom: '1px solid #1a1b28', alignItems:'center' },
   dataInput: { background:'#000', color:'#f0c040', border:'1px solid #333', padding:'6px', borderRadius:'6px', width:'70px', textAlign:'center', fontWeight:'bold' },
-  testPanel: { background:'rgba(240,192,64,0.05)', padding:'12px', borderRadius:'10px', border:'1px dashed #f0c040', marginBottom:'20px', display:'flex', gap:'12px' },
-  testInput: { flex:1, background:'#000', color:'#fff', border:'1px solid #333', padding:'8px', borderRadius:'6px' },
-  testBtn: { background:'#333', color:'#aaa', border:'none', padding:'0 15px', borderRadius:'6px', fontSize:'11px' }
+  testPanel: { background:'rgba(240,192,64,0.05)', padding:'12px', borderRadius:'10px', border:'1px dashed #f0c040', marginBottom:'20px', display:'flex', gap:'12px', alignItems:'center' },
+  testSelect: { flex:1, background:'#000', color:'#fff', border:'1px solid #333', padding:'10px', borderRadius:'8px', fontSize:'13px', fontWeight:'700' }
 };
 
 export default App;
