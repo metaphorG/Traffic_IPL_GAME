@@ -265,7 +265,7 @@ function App() {
       `}</style>
 
       {!user ? (
-        <div style={styles.authPage}><h1 style={styles.heroTitle}>ટ્રાફિકવાળાનો સટ્ટો</h1><button onClick={loginWithGoogle} style={styles.btnPrimary}>Login</button></div>
+        <div style={styles.authPage}><h1 style={styles.heroTitle}>IPL FUN GAME</h1><button onClick={loginWithGoogle} style={styles.btnPrimary}>Login</button></div>
       ) : (
         <>
           <nav style={styles.tabs}>
