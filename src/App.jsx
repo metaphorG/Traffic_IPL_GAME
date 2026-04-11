@@ -62,21 +62,47 @@ function App() {
     return date.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true });
   };
 
-  const loadMatchCache = async () => {
+    const loadMatchCache = async () => {
     const snap = await getDoc(doc(db, "system", "match_cache"));
     if (snap.exists()) {
       const allMatches = snap.data().list;
-      const todayIST = new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
+      const now = new Date();
+      const todayISTStr = now.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
+
       if (auth.currentUser?.email === ADMIN_EMAIL) {
-        setMatches(allMatches);
+        // Separate matches into Future (including today) and Past
+        const futureMatches = [];
+        const pastMatches = [];
+
+        allMatches.forEach(m => {
+          const mDate = new Date(m.dateTimeGMT.replace(' ', 'T') + 'Z');
+          // We compare the full timestamp to ensure "now" is the cutoff
+          if (mDate >= now) {
+            futureMatches.push(m);
+          } else {
+            pastMatches.push(m);
+          }
+        });
+
+        // Sort both arrays chronologically (ascending)
+        const sortByDate = (a, b) => 
+          new Date(a.dateTimeGMT.replace(' ', 'T') + 'Z') - new Date(b.dateTimeGMT.replace(' ', 'T') + 'Z');
+
+        futureMatches.sort(sortByDate);
+        pastMatches.sort(sortByDate);
+
+        // Combine: Future first, then Past
+        setMatches([...futureMatches, ...pastMatches]);
       } else {
+        // KEEPING REST AS IS: Standard user only sees matches for 'today'
         setMatches(allMatches.filter(m => {
           const mDate = new Date(m.dateTimeGMT.replace(' ', 'T') + 'Z').toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
-          return mDate === todayIST;
+          return mDate === todayISTStr;
         }));
       }
     }
   };
+
 
   const loadLeaderboard = async () => {
     const snap = await getDocs(collection(db, "users"));
