@@ -41,7 +41,6 @@ function App() {
     return onSnapshot(q, (snap) => setAllPicks(snap.docs.map(d => d.data())));
   }, [selectedMatch]);
 
-  // FIXED: Logic to properly sum credits from all keys, even if some are empty
   const fetchTotalCredits = async () => {
     let sum = 0;
     for (let key of CRIC_KEYS) {
@@ -51,7 +50,7 @@ function App() {
         if (data.status === 'success') {
           sum += (data.data.hitsLimit - data.data.hitsUsed);
         }
-      } catch (e) { console.error("Key metadata fetch error"); }
+      } catch (e) { console.error("Ticker fetch fail"); }
     }
     setTotalCredits(sum);
   };
@@ -62,7 +61,7 @@ function App() {
     return date.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true });
   };
 
-    const loadMatchCache = async () => {
+  const loadMatchCache = async () => {
     const snap = await getDoc(doc(db, "system", "match_cache"));
     if (snap.exists()) {
       const allMatches = snap.data().list;
@@ -70,31 +69,18 @@ function App() {
       const todayISTStr = now.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
 
       if (auth.currentUser?.email === ADMIN_EMAIL) {
-        // Separate matches into Future (including today) and Past
         const futureMatches = [];
         const pastMatches = [];
-
         allMatches.forEach(m => {
           const mDate = new Date(m.dateTimeGMT.replace(' ', 'T') + 'Z');
-          // We compare the full timestamp to ensure "now" is the cutoff
-          if (mDate >= now) {
-            futureMatches.push(m);
-          } else {
-            pastMatches.push(m);
-          }
+          if (mDate >= now) futureMatches.push(m);
+          else pastMatches.push(m);
         });
-
-        // Sort both arrays chronologically (ascending)
-        const sortByDate = (a, b) => 
-          new Date(a.dateTimeGMT.replace(' ', 'T') + 'Z') - new Date(b.dateTimeGMT.replace(' ', 'T') + 'Z');
-
+        const sortByDate = (a, b) => new Date(a.dateTimeGMT.replace(' ', 'T') + 'Z') - new Date(b.dateTimeGMT.replace(' ', 'T') + 'Z');
         futureMatches.sort(sortByDate);
         pastMatches.sort(sortByDate);
-
-        // Combine: Future first, then Past
         setMatches([...futureMatches, ...pastMatches]);
       } else {
-        // KEEPING REST AS IS: Standard user only sees matches for 'today'
         setMatches(allMatches.filter(m => {
           const mDate = new Date(m.dateTimeGMT.replace(' ', 'T') + 'Z').toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
           return mDate === todayISTStr;
@@ -102,7 +88,6 @@ function App() {
       }
     }
   };
-
 
   const loadLeaderboard = async () => {
     const snap = await getDocs(collection(db, "users"));
@@ -131,47 +116,42 @@ function App() {
 
   const resetCurrentMatch = async () => {
     if (!selectedMatch || user.email !== ADMIN_EMAIL) return;
-    if (!window.confirm("Clear all selections for THIS match?")) return;
+    if (!window.confirm("Clear all picks for this match?")) return;
     const batch = writeBatch(db);
     const q = query(collection(db, "match_picks"), where("matchId", "==", selectedMatch.id));
     const snap = await getDocs(q);
     snap.forEach(d => batch.delete(d.ref));
     await batch.commit();
-    alert("Match Reset!");
+    alert("Match Selections Cleared");
   };
 
   const toggleArchive = async () => {
     if (!selectedMatch || user.email !== ADMIN_EMAIL) return;
     const newState = !selectedMatch.settled;
-    if (newState === false && !window.confirm("Unlock this match for edits?")) return;
+    if (newState === false && !window.confirm("Unlock for edits?")) return;
     await setDoc(doc(db, "active_matches", selectedMatch.id), { settled: newState }, { merge: true });
     setSelectedMatch(prev => ({...prev, settled: newState}));
     loadMatchHistory();
   };
 
-  // FIXED: True multi-key fallback logic
   const adminFetchMatches = async () => {
     if (user.email !== ADMIN_EMAIL) return;
     for (let key of CRIC_KEYS) {
       try {
         const res = await fetch(`https://api.cricapi.com/v1/series_info?apikey=${key}&id=${IPL_SERIES_ID}`);
         const data = await res.json();
-        // If this key is out of credits, it will fail this check, and the loop will try the next key
         if (data.status === 'success') {
           const list = (data.data.matchList || []);
           await setDoc(doc(db, "system", "match_cache"), { list, updatedAt: serverTimestamp() });
           loadMatchCache();
           fetchTotalCredits();
-          alert("Fixtures Synchronized");
+          alert("Fixtures Synced");
           return; 
         }
-        console.log(`Key ${key.substring(0,5)}... failed or exhausted. Trying next...`);
       } catch (e) { console.error(e); }
     }
-    alert("All 4 API keys are exhausted or failing!");
   };
 
-  // FIXED: True multi-key fallback logic
   const adminFetchScorecard = async () => {
     if (user.email !== ADMIN_EMAIL || selectedMatch?.settled) return;
     for (let key of CRIC_KEYS) {
@@ -180,22 +160,27 @@ function App() {
         const data = await res.json();
         if (data.status === 'success' && data.data.scorecard) {
           const sc = data.data.scorecard;
-          const t1Name = sc[0]?.inning || data.data.teams[0];
-          const t2Name = sc[1]?.inning || data.data.teams[1];
-          const parse = (inn, team) => (inn?.batting || []).slice(0, 9).map((b, i) => ({ 
-            pos: i + 1, team, name: b.batsman?.name || b.name || "Not Played", runs: b.r || 0 
+          const parse = (inn) => (inn?.batting || []).slice(0, 9).map((b, i) => ({ 
+            pos: i + 1, name: b.batsman?.name || b.name || "Not Played", runs: b.r || 0 
           }));
-          const scores = { inn1: parse(sc[0], t1Name), inn2: parse(sc[1], t2Name), updatedAt: new Date() };
-          await setDoc(doc(db, "active_matches", selectedMatch.id), { scores, t1: t1Name, t2: t2Name }, { merge: true });
-          setSelectedMatch({ ...selectedMatch, scores, t1: t1Name, t2: t2Name });
+
+          // FIX: Preserve team mapping regardless of who bats first
+          let scores = { inn1: [], inn2: [], updatedAt: new Date() };
+          sc.forEach(obj => {
+            if (obj.inning.includes(selectedMatch.t1)) scores.inn1 = parse(obj);
+            else if (obj.inning.includes(selectedMatch.t2)) scores.inn2 = parse(obj);
+          });
+          if (scores.inn1.length === 0) scores.inn1 = parse(sc[0]);
+          if (scores.inn2.length === 0) scores.inn2 = parse(sc[1]);
+
+          await setDoc(doc(db, "active_matches", selectedMatch.id), { scores }, { merge: true });
+          setSelectedMatch({ ...selectedMatch, scores });
           fetchTotalCredits();
-          alert("Live Score Updated");
+          alert("Score Updated");
           return;
         }
-        console.log(`Key ${key.substring(0,5)}... exhausted. Trying next...`);
       } catch (e) { console.error(e); }
     }
-    alert("All keys exhausted!");
   };
 
   const calculateFinalPoints = (matchObj, picksArr) => {
@@ -220,7 +205,7 @@ function App() {
         } else if (startPos === 1) {
           if (count === 1) r.net = Math.round(remPot * 0.4) - pullUsed;
           else r.net = Math.round((Math.round(remPot * 0.4) + pullUsed) / count) - pullUsed;
-        } else if (startPos === 2) r.net = count === 1 ? 0 : -pullUsed;
+        } else if (startPos === 2) r.net = 0;
         else r.net = -pullUsed;
       });
       rank += count;
@@ -239,7 +224,7 @@ function App() {
 
   const nuclearReset = async () => {
     if (user.email !== ADMIN_EMAIL) return;
-    if (!window.confirm("☢️ NUCLEAR RESET?")) return;
+    if (!window.confirm("☢️ ERASE ALL?")) return;
     const cols = ['match_picks', 'active_matches', 'users'];
     for (const c of cols) {
       const snap = await getDocs(collection(db, c));
@@ -278,7 +263,7 @@ function App() {
   const userHasFinished = allPicks.find(p => p.userId === effectiveID)?.inn1Card !== undefined && 
                           allPicks.find(p => p.userId === effectiveID)?.inn2Card !== undefined;
 
-  if (loading) return <div style={styles.center}>🏏 PREPARING ARENA...</div>;
+  if (loading) return <div style={styles.center}>🏏 ARENA LOADING...</div>;
 
   return (
     <div style={styles.container}>
@@ -291,7 +276,7 @@ function App() {
       `}</style>
 
       {!user ? (
-        <div style={styles.authPage}><h1 style={styles.heroTitle}>IPL FUN GAME</h1><button onClick={loginWithGoogle} style={styles.btnPrimary}>Login</button></div>
+        <div style={styles.authPage}><h1 style={styles.heroTitle}>ટ્રાફિકવાળાનો સટ્ટો</h1><button onClick={loginWithGoogle} style={styles.btnPrimary}>Login to Enter</button></div>
       ) : (
         <>
           <nav style={styles.tabs}>
@@ -304,7 +289,7 @@ function App() {
           {tab === 'matches' && (
             <section style={{padding: '0 15px'}}>
               {user.email === ADMIN_EMAIL && <button onClick={adminFetchMatches} style={styles.btnAdmin}>ADMIN: SYNC FIXTURES</button>}
-              {matches.length === 0 ? <div style={{textAlign:'center', marginTop:'50px', color:'#52536e'}}>No matches today.</div> : 
+              {matches.length === 0 ? <div style={{textAlign:'center', marginTop:'50px', color:'#52536e'}}>No matches scheduled today.</div> : 
                 matches.map(m => {
                   const todayStr = new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
                   const matchStr = new Date(m.dateTimeGMT.replace(' ', 'T') + 'Z').toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
@@ -334,10 +319,8 @@ function App() {
                   <button onClick={resetCurrentMatch} style={styles.btnResetSmall}>RESET MATCH</button>
                 </div>
               )}
-
               <h3 style={styles.arenaTitle}>{selectedMatch.name}</h3>
               {selectedMatch.settled && <div style={styles.lockBadge}>🔒 MATCH ARCHIVED</div>}
-
               <div style={styles.teamHeaderBox}><span style={styles.teamLabel}>TEAM GREEN</span><h4 style={{...styles.teamNameText, color:'#1fd18a'}}>{selectedMatch.t1}</h4></div>
               <div style={styles.grid}>
                 {[...Array(9)].map((_, i) => {
@@ -347,9 +330,7 @@ function App() {
                   return <div key={i} onClick={() => !p && lockCard(1, i)} style={{...styles.cardComplex, background: p ? (isMe ? '#1fd18a' : 'rgba(31,209,138,0.1)') : '#13141f', borderColor: p ? '#1fd18a' : '#252638'}}>{p ? <><div style={{...styles.cardNumber, color: isMe ? '#000' : '#1fd18a'}}>#{p.inn1Num}</div><div style={{...styles.cardFriend, color: isMe ? '#000' : '#eee'}}>{p.userName.split(' ')[0]}</div></> : (showReveal ? <span style={{color:'#f0c040', fontSize:'22px', fontFamily:'Bebas Neue'}}>#{matchDeck.inn1Deck[i]}</span> : <div style={{fontSize: '24px'}}>🏏</div>)}</div>
                 })}
               </div>
-
               {userHasFinished && <div style={{display:'flex', justifyContent:'center', margin:'30px 0'}}><button onClick={() => setTab('results')} style={styles.btnNavigate}>VIEW LIVE RESULTS →</button></div>}
-
               <div style={{...styles.teamHeaderBox, marginTop: userHasFinished ? '0' : '30px'}}><span style={styles.teamLabel}>TEAM RED</span><h4 style={{...styles.teamNameText, color:'#ff3d5a'}}>{selectedMatch.t2}</h4></div>
               <div style={styles.grid}>
                 {[...Array(9)].map((_, i) => {
@@ -380,7 +361,7 @@ function App() {
               )}
               <div style={styles.podiumContainer}>
                 {calculateFinalPoints(selectedMatch, allPicks).slice(0, 3).map((r, i) => (
-                  <div key={i} style={{...styles.pod, order: i === 0 ? 2 : i === 1 ? 1 : 3, height: i === 0 ? '160px' : '140px', borderColor: i === 0 ? '#f0c040' : '#252638'}}>
+                  <div key={i} style={{...styles.pod, order: i === 0 ? 2 : i === 1 ? 1 : 3, height: i === 0 ? '170px' : '140px', borderColor: i === 0 ? '#f0c040' : '#252638'}}>
                     <div style={{fontSize:'32px'}}>{i === 0 ? '🥇' : i === 1 ? '🥈' : '🥉'}</div><div style={styles.podName}>{r.userName}</div><div style={styles.podScore}>{r.total}</div><div style={{color: r.net >= 0 ? '#1fd18a' : '#ff3d5a', fontSize: '14px', fontWeight:'bold'}}>{r.net > 0 ? '+' : ''}{r.net}</div>
                   </div>
                 ))}
@@ -405,22 +386,7 @@ function App() {
               <h2 style={styles.sectionHeader}>📋 MATCH HISTORY</h2>
               {matchHistory.map((m, i) => {
                 const res = calculateFinalPoints(m, m.allPicks);
-                return (
-                  <div key={i} className="match-history-card" onClick={() => { setSelectedMatch(m); setTab('results'); }}>
-                    <div style={{display:'flex', justifyContent:'space-between', marginBottom:'12px', borderBottom:'1px solid #252638', paddingBottom:'8px'}}>
-                        <span style={{fontWeight:'bold', fontSize:'15px'}}>🏏 {m.matchName}</span>
-                        <span style={{fontSize:'11px', color:'#7a7b98'}}>{m.dateText} • Pull: {m.finalPull}</span>
-                    </div>
-                    <div style={{display:'flex', gap:'8px', marginBottom:'12px'}}>
-                        <div className="pill" style={{borderColor:'#f0c040'}}>🥇 {res[0]?.userName}</div>
-                        <div className="pill" style={{borderColor:'#c0c0c0'}}>🥈 {res[1]?.userName}</div>
-                        <div className="pill" style={{borderColor:'#cd7f32'}}>🥉 {res[2]?.userName}</div>
-                    </div>
-                    <div style={{display:'flex', flexWrap:'wrap', gap:'10px', fontSize:'11px', color:'#52536e'}}>
-                        {res.map((p, idx) => (<span key={idx}>{p.userName}: <span style={{color: p.net > 0 ? '#1fd18a' : p.net === 0 ? '#eee' : '#ff3d5a'}}>{p.net > 0 ? '+' : ''}{p.net}</span>{idx < res.length - 1 ? ' •' : ''}</span>))}
-                    </div>
-                  </div>
-                );
+                return (<div key={i} className="match-history-card" onClick={() => { setSelectedMatch(m); setTab('results'); }}><div style={{display:'flex', justifyContent:'space-between', marginBottom:'12px', borderBottom:'1px solid #252638', paddingBottom:'8px'}}><span style={{fontWeight:'bold'}}>🏏 {m.matchName}</span><span style={{fontSize:'11px', color:'#7a7b98'}}>{m.dateText} • Pull: {m.finalPull}</span></div><div style={{display:'flex', gap:'8px', marginBottom:'12px'}}><div className="pill" style={{borderColor:'#f0c040'}}>🥇 {res[0]?.userName}</div><div className="pill" style={{borderColor:'#c0c0c0'}}>🥈 {res[1]?.userName}</div><div className="pill" style={{borderColor:'#cd7f32'}}>🥉 {res[2]?.userName}</div></div><div style={{display:'flex', flexWrap:'wrap', gap:'10px', fontSize:'11px', color:'#52536e'}}>{res.map((p, idx) => (<span key={idx}>{p.userName}: <span style={{color: p.net > 0 ? '#1fd18a' : p.net === 0 ? '#eee' : '#ff3d5a'}}>{p.net > 0 ? '+' : ''}{p.net}</span>{idx < res.length - 1 ? ' •' : ''}</span>))}</div></div>);
               })}
             </section>
           )}
