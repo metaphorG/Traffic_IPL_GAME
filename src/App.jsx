@@ -47,10 +47,8 @@ function App() {
       try {
         const res = await fetch(`https://api.cricapi.com/v1/metadata?apikey=${key}`);
         const data = await res.json();
-        if (data.status === 'success' && data.info) {
-          sum += (data.info.hitsLimit - data.info.hitsToday);
-        }
-      } catch (e) {}
+        if (data.status === 'success') sum += (data.data.hitsLimit - data.data.hitsUsed);
+      } catch (e) { console.error("Key error"); }
     }
     setTotalCredits(sum);
   };
@@ -65,14 +63,14 @@ function App() {
     const snap = await getDoc(doc(db, "system", "match_cache"));
     if (snap.exists()) {
       const allMatches = snap.data().list;
-      const now = new Date();
-      const todayISTStr = now.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
+      const todayIST = new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
       if (auth.currentUser?.email === ADMIN_EMAIL) {
-        const future = allMatches.filter(m => new Date(m.dateTimeGMT.replace(' ', 'T') + 'Z') >= now);
-        const past = allMatches.filter(m => new Date(m.dateTimeGMT.replace(' ', 'T') + 'Z') < now);
-        setMatches([...future, ...past]);
+        setMatches(allMatches);
       } else {
-        setMatches(allMatches.filter(m => new Date(m.dateTimeGMT.replace(' ', 'T') + 'Z').toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' }) === todayISTStr));
+        setMatches(allMatches.filter(m => {
+          const mDate = new Date(m.dateTimeGMT.replace(' ', 'T') + 'Z').toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
+          return mDate === todayIST;
+        }));
       }
     }
   };
@@ -115,6 +113,7 @@ function App() {
   const toggleArchive = async () => {
     if (!selectedMatch || user.email !== ADMIN_EMAIL) return;
     const newState = !selectedMatch.settled;
+    if (newState === false && !window.confirm("Unlock for edits?")) return;
     await setDoc(doc(db, "active_matches", selectedMatch.id), { settled: newState }, { merge: true });
     setSelectedMatch(prev => ({...prev, settled: newState}));
     loadMatchHistory();
@@ -127,14 +126,15 @@ function App() {
         const res = await fetch(`https://api.cricapi.com/v1/series_info?apikey=${key}&id=${IPL_SERIES_ID}`);
         const data = await res.json();
         if (data.status === 'success') {
-          await setDoc(doc(db, "system", "match_cache"), { list: data.data.matchList || [], updatedAt: serverTimestamp() });
+          const list = (data.data.matchList || []);
+          await setDoc(doc(db, "system", "match_cache"), { list, updatedAt: serverTimestamp() });
           loadMatchCache();
           fetchTotalCredits();
+          alert("Synced");
           return; 
         }
-      } catch (e) {}
+      } catch (e) { console.error(e); }
     }
-    alert("All keys exhausted!");
   };
 
   const adminFetchScorecard = async () => {
@@ -148,35 +148,45 @@ function App() {
           const parse = (inn) => (inn?.batting || []).slice(0, 9).map((b, i) => ({ 
             pos: i + 1, name: b.batsman?.name || b.name || "Not Played", runs: b.r || 0 
           }));
+
           let scoresMap = {};
-          sc.forEach(innObj => { scoresMap[innObj.inning.toLowerCase()] = parse(innObj); });
+          sc.forEach(inningObj => {
+            scoresMap[inningObj.inning.toLowerCase()] = parse(inningObj);
+          });
+
           await setDoc(doc(db, "active_matches", selectedMatch.id), { scoresMap }, { merge: true });
           setSelectedMatch({ ...selectedMatch, scoresMap });
           fetchTotalCredits();
+          alert("Scorecard Fetched");
           return;
         }
-      } catch (e) {}
+      } catch (e) { console.error(e); }
     }
-    alert("API Keys Exhausted!");
   };
 
   const calculateFinalPoints = (matchObj, picksArr) => {
-    if (!picksArr || picksArr.length === 0) return [];
+    // CRITICAL: Check for scoresMap instead of old scores object
+    if (!matchObj?.scoresMap || picksArr.length === 0) return [];
+    
     let results = picksArr.map(p => {
-      let s1, s2;
-      if (matchObj.scoresMap) {
-        const findS = (name, pos) => {
-          if (!name) return null;
-          const k = Object.keys(matchObj.scoresMap).find(key => key.includes(name.toLowerCase()));
-          return (matchObj.scoresMap[k] || []).find(s => s.pos === pos);
-        };
-        s1 = findS(p.t1Name, p.inn1Num);
-        s2 = findS(p.t2Name, p.inn2Num);
-      } else if (matchObj.scores) {
-        s1 = (matchObj.scores.inn1 || []).find(s => s.pos === p.inn1Num);
-        s2 = (matchObj.scores.inn2 || []).find(s => s.pos === p.inn2Num);
-      }
-      return { ...p, p1Name: s1?.name || "TBD", p2Name: s2?.name || "TBD", r1: s1?.runs || 0, r2: s2?.runs || 0, total: (s1?.runs || 0) + (s2?.runs || 0) };
+      const findScore = (teamName, pos) => {
+        if (!teamName) return null;
+        const teamKey = Object.keys(matchObj.scoresMap).find(k => k.includes(teamName.toLowerCase()));
+        const battingList = matchObj.scoresMap[teamKey] || [];
+        return battingList.find(s => s.pos === pos);
+      };
+
+      const s1 = findScore(p.t1Name, p.inn1Num);
+      const s2 = findScore(p.t2Name, p.inn2Num);
+
+      return { 
+        ...p, 
+        p1Name: s1?.name || "TBD", 
+        p2Name: s2?.name || "TBD", 
+        r1: s1?.runs || 0, 
+        r2: s2?.runs || 0, 
+        total: (s1?.runs || 0) + (s2?.runs || 0) 
+      };
     }).sort((a,b) => b.total - a.total);
 
     const pullUsed = matchObj.finalPull || adminPull;
@@ -204,30 +214,34 @@ function App() {
 
   const submitToSeason = async () => {
     const res = calculateFinalPoints(selectedMatch, allPicks);
-    if (user.email !== ADMIN_EMAIL || (!selectedMatch?.scoresMap && !selectedMatch?.scores) || selectedMatch?.settled) return;
-    if (!window.confirm(`Finalize?`)) return;
+    if (user.email !== ADMIN_EMAIL || !selectedMatch?.scoresMap || selectedMatch?.settled) return;
+    if (!window.confirm(`Finalize results?`)) return;
     for (let r of res) await setDoc(doc(db, "users", r.userId), { name: r.userName, totalPoints: increment(r.net) }, { merge: true });
     await setDoc(doc(db, "active_matches", selectedMatch.id), { settled: true, finalPull: adminPull, matchName: selectedMatch.name, dateText: formatIST(selectedMatch.dateTimeGMT), updatedAt: new Date() }, { merge: true });
+    window.location.reload();
+  };
+
+  const nuclearReset = async () => {
+    if (user.email !== ADMIN_EMAIL) return;
+    if (!window.confirm("☢️ NUCLEAR RESET?")) return;
+    const cols = ['match_picks', 'active_matches', 'users'];
+    for (const c of cols) {
+      const snap = await getDocs(collection(db, c));
+      const batch = writeBatch(db);
+      snap.forEach(d => batch.delete(d.ref));
+      await batch.commit();
+    }
     window.location.reload();
   };
 
   const handleSelectMatch = async (m) => {
     const matchRef = doc(db, "active_matches", m.id);
     let snap = await getDoc(matchRef);
-    // FIXED: Robust extraction of team names to prevent white screen
-    const teamsList = m.teams || [];
-    let t1 = teamsList[0] || "Team 1";
-    let t2 = teamsList[1] || "Team 2";
-    if (teamsList.length === 0 && m.name.includes(" vs ")) {
-        const parts = m.name.split(" vs ");
-        t1 = parts[0].trim();
-        t2 = parts[1].split(",")[0].trim();
-    }
-
+    const teamNames = m.teams || [m.t1, m.t2];
     const data = snap.exists() ? snap.data() : { 
       inn1Deck: [1,2,3,4,5,6,7,8,9].sort(() => Math.random()-0.5), 
       inn2Deck: [1,2,3,4,5,6,7,8,9].sort(() => Math.random()-0.5),
-      t1, t2
+      t1: teamNames[0], t2: teamNames[1]
     };
     if (!snap.exists()) await setDoc(matchRef, data);
     setMatchDeck(data);
@@ -238,13 +252,24 @@ function App() {
 
   const lockCard = async (inn, idx) => {
     if (selectedMatch?.settled) return;
-    const uid = adminIdentity.id || user.uid;
-    const name = adminIdentity.name || user.displayName;
-    if (allPicks.find(p => p.userId === uid)?.[`inn${inn}Card`] !== undefined) return;
+    const effectiveUID = adminIdentity.id || user.uid;
+    const effectiveName = adminIdentity.name || user.displayName;
+    if (allPicks.find(p => p.userId === effectiveUID)?.[`inn${inn}Card`] !== undefined) return;
     if (allPicks.some(p => p[`inn${inn}Card`] === idx)) return;
-    const teamName = inn === 1 ? selectedMatch.t1 : selectedMatch.t2;
-    await setDoc(doc(db, "match_picks", `${selectedMatch.id}_${uid}`), { userId: uid, userName: name, matchId: selectedMatch.id, [`inn${inn}Card`]: idx, [`inn${inn}Num`]: matchDeck[`inn${inn}Deck`][idx], [`t${inn}Name`]: teamName, timestamp: serverTimestamp() }, { merge: true });
+    
+    const assignedTeamName = inn === 1 ? selectedMatch.t1 : selectedMatch.t2;
+
+    await setDoc(doc(db, "match_picks", `${selectedMatch.id}_${effectiveUID}`), { 
+        userId: effectiveUID, userName: effectiveName, matchId: selectedMatch.id, 
+        [`inn${inn}Card`]: idx, [`inn${inn}Num`]: matchDeck[`inn${inn}Deck`][idx],
+        [`t${inn}Name`]: assignedTeamName,
+        timestamp: serverTimestamp() 
+    }, { merge: true });
   };
+
+  const effectiveID = adminIdentity.id || user?.uid;
+  const userHasFinished = allPicks.find(p => p.userId === effectiveID)?.inn1Card !== undefined && 
+                          allPicks.find(p => p.userId === effectiveID)?.inn2Card !== undefined;
 
   if (loading) return <div style={styles.center}>🏏 LOADING ARENA...</div>;
 
@@ -259,7 +284,7 @@ function App() {
       `}</style>
 
       {!user ? (
-        <div style={styles.authPage}><h1 style={styles.heroTitle}>ટ્રાફિકવાળાનો સટ્ટો</h1><button onClick={loginWithGoogle} style={styles.btnPrimary}>Login</button></div>
+        <div style={styles.authPage}><h1 style={styles.heroTitle}>ટ્રાફિકવાળાનો સટ્ટો</h1><button onClick={loginWithGoogle} style={styles.btnPrimary}>Login to Enter</button></div>
       ) : (
         <>
           <nav style={styles.tabs}>
@@ -273,12 +298,12 @@ function App() {
             <section style={{padding: '0 15px'}}>
               {user.email === ADMIN_EMAIL && <button onClick={adminFetchMatches} style={styles.btnAdmin}>ADMIN: SYNC FIXTURES</button>}
               {matches.map(m => {
-                  const today = new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
-                  const mDate = new Date(m.dateTimeGMT.replace(' ', 'T') + 'Z').toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
-                  const isToday = today === mDate;
+                  const todayStr = new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
+                  const matchStr = new Date(m.dateTimeGMT.replace(' ', 'T') + 'Z').toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
+                  const isToday = todayStr === matchStr;
                   return (
                     <div key={m.id} onClick={() => handleSelectMatch(m)} style={{...styles.matchCard, border: isToday ? '1px solid #1fd18a' : '1px solid #252638'}}>
-                      <div style={styles.matchMeta}>{isToday ? '🔥 TODAY' : 'SCHEDULED'}</div>
+                      <div style={styles.matchMeta}>{isToday ? '🔥 PLAYING TODAY' : 'UPCOMING / PAST'}</div>
                       <b style={styles.matchTitle}>{m.name}</b>
                       <div style={styles.matchTime}>{formatIST(m.dateTimeGMT)}</div>
                     </div>
@@ -291,7 +316,8 @@ function App() {
             <section style={{padding: '0 15px'}}>
               {user.email === ADMIN_EMAIL && !selectedMatch.settled && (
                 <div style={{display:'flex', gap:'10px', marginBottom:'20px'}}>
-                  <div style={styles.testPanel}><span style={{fontSize:'10px', fontWeight:'900', color:'#f0c040'}}>ACT AS:</span>
+                  <div style={styles.testPanel}>
+                    <span style={{fontSize:'10px', fontWeight:'900', color:'#f0c040'}}>ACT AS:</span>
                     <select style={styles.testSelect} onChange={(e) => { const v = e.target.value; if (!v) setAdminIdentity({id:"", name:""}); else { const [i, n] = v.split('|'); setAdminIdentity({id:i, name:n}); }}}>
                       <option value="">REAL PLAY (Hidden)</option>
                       {leaderboard.map(u => <option key={u.id} value={`${u.id}|${u.name}`}>{u.name}</option>)}
@@ -301,13 +327,14 @@ function App() {
                 </div>
               )}
               <h3 style={styles.arenaTitle}>{selectedMatch.name}</h3>
+              {selectedMatch.settled && <div style={styles.lockBadge}>🔒 MATCH ARCHIVED</div>}
               <div style={styles.teamHeaderBox}><span style={styles.teamLabel}>TEAM GREEN</span><h4 style={{...styles.teamNameText, color:'#1fd18a'}}>{selectedMatch.t1}</h4></div>
               <div style={styles.grid}>
                 {[...Array(9)].map((_, i) => {
                   const p = allPicks.find(x => x.inn1Card === i);
-                  const isMe = p?.userId === (adminIdentity.id || user.uid);
+                  const isMe = p?.userId === effectiveID;
                   const showReveal = !p && adminIdentity.id !== "";
-                  return <div key={i} onClick={() => !p && lockCard(1, i)} style={{...styles.cardComplex, background: p ? (isMe ? '#1fd18a' : 'rgba(31,209,138,0.1)') : '#13141f', borderColor: p ? '#1fd18a' : '#252638'}}>{p ? <><div style={{...styles.cardNumber, color: isMe ? '#000' : '#1fd18a'}}>#{p.inn1Num}</div><div style={{...styles.cardFriend, color: isMe ? '#000' : '#eee'}}>{p.userName.split(' ')[0]}</div></> : (showReveal ? <span style={{color:'#f0c040', fontSize:'22px', fontFamily:'Bebas Neue'}}>#{matchDeck.inn1Deck[i]}</span> : '🏏')}</div>
+                  return <div key={i} onClick={() => !p && lockCard(1, i)} style={{...styles.cardComplex, background: p ? (isMe ? '#1fd18a' : 'rgba(31,209,138,0.1)') : '#13141f', borderColor: p ? '#1fd18a' : '#252638'}}>{p ? <><div style={{...styles.cardNumber, color: isMe ? '#000' : '#1fd18a'}}>#{p.inn1Num}</div><div style={{...styles.cardFriend, color: isMe ? '#000' : '#eee'}}>{p.userName.split(' ')[0]}</div></> : (showReveal ? <span style={{color:'#f0c040', fontSize:'22px', fontFamily:'Bebas Neue'}}>#{matchDeck.inn1Deck[i]}</span> : <div style={{fontSize: '24px'}}>🏏</div>)}</div>
                 })}
               </div>
               {userHasFinished && <div style={{display:'flex', justifyContent:'center', margin:'30px 0'}}><button onClick={() => setTab('results')} style={styles.btnNavigate}>VIEW LIVE RESULTS →</button></div>}
@@ -315,9 +342,9 @@ function App() {
               <div style={styles.grid}>
                 {[...Array(9)].map((_, i) => {
                   const p = allPicks.find(x => x.inn2Card === i);
-                  const isMe = p?.userId === (adminIdentity.id || user.uid);
+                  const isMe = p?.userId === effectiveID;
                   const showReveal = !p && adminIdentity.id !== "";
-                  return <div key={i} onClick={() => !p && lockCard(2, i)} style={{...styles.cardComplex, background: p ? (isMe ? '#ff3d5a' : 'rgba(255,61,90,0.1)') : '#13141f', borderColor: p ? '#ff3d5a' : '#252638'}}>{p ? <><div style={{...styles.cardNumber, color: isMe ? '#000' : '#ff3d5a'}}>#{p.inn2Num}</div><div style={{...styles.cardFriend, color: isMe ? '#000' : '#eee'}}>{p.userName.split(' ')[0]}</div></> : (showReveal ? <span style={{color:'#f0c040', fontSize:'22px', fontFamily:'Bebas Neue'}}>#{matchDeck.inn2Deck[i]}</span> : '🏏')}</div>
+                  return <div key={i} onClick={() => !p && lockCard(2, i)} style={{...styles.cardComplex, background: p ? (isMe ? '#ff3d5a' : 'rgba(255,61,90,0.1)') : '#13141f', borderColor: p ? '#ff3d5a' : '#252638'}}>{p ? <><div style={{...styles.cardNumber, color: isMe ? '#000' : '#ff3d5a'}}>#{p.inn2Num}</div><div style={{...styles.cardFriend, color: isMe ? '#000' : '#eee'}}>{p.userName.split(' ')[0]}</div></> : (showReveal ? <span style={{color:'#f0c040', fontSize:'22px', fontFamily:'Bebas Neue'}}>#{matchDeck.inn2Deck[i]}</span> : <div style={{fontSize: '24px'}}>🏏</div>)}</div>
                 })}
               </div>
             </section>
@@ -327,41 +354,47 @@ function App() {
             <section style={{padding: '0 15px'}}>
               {user.email === ADMIN_EMAIL && (
                 <div style={styles.adminPanel}>
-                   {selectedMatch.settled ? <button onClick={toggleArchive} style={styles.btnUnlock}>⚠️ UNLOCK FOR EDITS</button> : 
-                     <><input type="number" value={adminPull} onChange={(e) => setAdminPull(parseInt(e.target.value))} style={styles.adminInput}/><button onClick={adminFetchScorecard} style={styles.btnAction}>SYNC</button><div style={styles.ticker}>Credits: {totalCredits ?? '...'}</div><button onClick={submitToSeason} style={{...styles.btnAction, background:'#1fd18a'}}>FINALIZE</button></>}
+                   {selectedMatch.settled ? (
+                     <button onClick={toggleArchive} style={{...styles.btnAction, background:'#ff3d5a'}}>⚠️ UNLOCK FOR EDITS</button>
+                   ) : (
+                     <>
+                        <input type="number" value={adminPull} onChange={(e) => setAdminPull(parseInt(e.target.value))} style={styles.adminInput}/>
+                        <button onClick={adminFetchScorecard} style={styles.btnAction}>SYNC</button>
+                        <div style={styles.ticker}>Credits: {totalCredits ?? '...'}</div>
+                        <button onClick={submitToSeason} style={{...styles.btnAction, background:'#1fd18a'}}>FINALIZE</button>
+                     </>
+                   )}
                 </div>
               )}
-              {(() => {
-                const res = calculateFinalPoints(selectedMatch, allPicks);
-                return (
-                  <>
-                    <div style={styles.podiumContainer}>
-                      {res.slice(0, 3).map((r, i) => (
-                        <div key={i} style={{...styles.pod, order: i === 0 ? 2 : i === 1 ? 1 : 3, height: i === 0 ? '160px' : '140px', borderColor: i === 0 ? '#f0c040' : '#252638'}}>
-                          <div style={{fontSize:'32px'}}>{i === 0 ? '🥇' : i === 1 ? '🥈' : '🥉'}</div><div style={styles.podName}>{r.userName}</div><div style={styles.podScore}>{r.total}</div><div style={{color: r.net >= 0 ? '#1fd18a' : '#ff3d5a', fontSize: '14px', fontWeight:'bold'}}>{r.net > 0 ? '+' : ''}{r.net}</div>
-                        </div>
-                      ))}
-                    </div>
-                    <div style={styles.tableWrap}>
-                      <div style={styles.tableHeader}><div style={styles.colF}>FRIEND</div><div style={styles.colInn}>PLAYER 1</div><div style={styles.colR}>RUNS</div><div style={styles.colInn}>PLAYER 2</div><div style={styles.colR}>RUNS</div><div style={styles.colTot}>TOTAL</div></div>
-                      {res.map((p, i) => (
-                        <div key={i} style={styles.tableRow}><div style={styles.colF}>{p.userName.split(' ')[0]}</div><div style={styles.colInn}><span style={{color:'#1fd18a', fontWeight:'bold'}}>#{p.inn1Num}</span> <span style={styles.playerName}>{p.p1Name}</span></div><div style={styles.colR}>{p.r1}</div><div style={styles.colInn}><span style={{color:'#ff3d5a', fontWeight:'bold'}}>#{p.inn2Num}</span> <span style={styles.playerName}>{p.p2Name}</span></div><div style={styles.colR}>{p.r2}</div><div style={{...styles.colTot, color:'#f0c040'}}>{p.total}</div></div>
-                      ))}
-                    </div>
-                  </>
-                );
-              })()}
+              {/* FIXED PODIUM Logic */}
+              <div style={styles.podiumContainer}>
+                {calculateFinalPoints(selectedMatch, allPicks).slice(0, 3).map((r, i) => (
+                  <div key={i} style={{...styles.pod, order: i === 0 ? 2 : i === 1 ? 1 : 3, height: i === 0 ? '160px' : '140px', borderColor: i === 0 ? '#f0c040' : '#252638'}}>
+                    <div style={{fontSize:'32px'}}>{i === 0 ? '🥇' : i === 1 ? '🥈' : '🥉'}</div><div style={styles.podName}>{r.userName}</div><div style={styles.podScore}>{r.total}</div><div style={{color: r.net >= 0 ? '#1fd18a' : '#ff3d5a', fontSize: '14px', fontWeight:'bold'}}>{r.net > 0 ? '+' : ''}{r.net}</div>
+                  </div>
+                ))}
+              </div>
+              <div style={styles.tableWrap}>
+                <div style={styles.tableHeader}><div style={styles.colF}>FRIEND</div><div style={styles.colInn}>PLAYER 1</div><div style={styles.colR}>RUNS</div><div style={styles.colInn}>PLAYER 2</div><div style={styles.colR}>RUNS</div><div style={styles.colTot}>TOTAL</div></div>
+                {calculateFinalPoints(selectedMatch, allPicks).map((p, i) => (
+                  <div key={i} style={styles.tableRow}><div style={styles.colF}>{p.userName.split(' ')[0]}</div><div style={styles.colInn}><span style={{color:'#1fd18a', fontWeight:'bold'}}>#{p.inn1Num}</span> <span style={styles.playerName}>{p.p1Name}</span></div><div style={styles.colR}>{p.r1}</div><div style={styles.colInn}><span style={{color:'#ff3d5a', fontWeight:'bold'}}>#{p.inn2Num}</span> <span style={styles.playerName}>{p.p2Name}</span></div><div style={styles.colR}>{p.r2}</div><div style={{...styles.colTot, color:'#f0c040'}}>{p.total}</div></div>
+                ))}
+              </div>
             </section>
           )}
 
           {tab === 'season' && (
             <section style={{padding: '0 15px'}}>
               <h2 style={styles.sectionHeader}>🏆 SEASON STANDINGS</h2>
-              <div style={styles.tableWrap}>{leaderboard.map((u, i) => (<div key={i} style={styles.tableRow}><div style={{flex:1, color:'#52536e'}}>0{i+1}</div><div style={{flex:3, fontWeight:'bold', color: i === 0 ? '#f0c040' : '#eee'}}>{u.name}</div><div style={{flex:2, textAlign:'right', color: u.totalPoints >= 0 ? '#1fd18a' : '#ff3d5a', fontSize:'22px', fontFamily:'Bebas Neue'}}>{u.totalPoints > 0 ? '+' : ''}{u.totalPoints}</div></div>))}</div>
-              <h2 style={{...styles.sectionHeader, marginTop:'40px'}}>📋 MATCH HISTORY</h2>
+              <div style={{...styles.tableWrap, marginBottom:'40px', background:'#0e0f1a'}}>
+                 {leaderboard.map((u, i) => (
+                   <div key={i} style={styles.tableRow}><div style={{flex:1, color:'#52536e'}}>0{i+1}</div><div style={{flex:3, fontWeight:'bold', color: i === 0 ? '#f0c040' : '#eee'}}>{u.name}</div><div style={{flex:2, textAlign:'right', color: u.totalPoints >= 0 ? '#1fd18a' : '#ff3d5a', fontSize:'22px', fontFamily:'Bebas Neue'}}>{u.totalPoints > 0 ? '+' : ''}{u.totalPoints}</div></div>
+                 ))}
+              </div>
+              <h2 style={styles.sectionHeader}>📋 MATCH HISTORY</h2>
               {matchHistory.map((m, i) => {
                 const res = calculateFinalPoints(m, m.allPicks);
-                return (<div key={i} className="match-history-card" onClick={() => { setSelectedMatch(m); setTab('results'); }}><div style={{display:'flex', justifyContent:'space-between', marginBottom:'12px', borderBottom:'1px solid #252638', paddingBottom:'8px'}}><span style={{fontWeight:'bold'}}>🏏 {m.matchName}</span><span style={{fontSize:'11px', color:'#7a7b98'}}>{m.dateText}</span></div><div style={{display:'flex', gap:'8px', marginBottom:'12px'}}>
+                return (<div key={i} className="match-history-card" onClick={() => { setSelectedMatch(m); setTab('results'); }}><div style={{display:'flex', justifyContent:'space-between', marginBottom:'12px', borderBottom:'1px solid #252638', paddingBottom:'8px'}}><span style={{fontWeight:'bold'}}>🏏 {m.matchName}</span><span style={{fontSize:'11px', color:'#7a7b98'}}>{m.dateText} • Pull: {m.finalPull}</span></div><div style={{display:'flex', gap:'8px', marginBottom:'12px'}}>
                         <div className="pill" style={{borderColor:'#f0c040'}}>🥇 {res[0]?.userName}</div>
                         <div className="pill" style={{borderColor:'#c0c0c0'}}>🥈 {res[1]?.userName}</div>
                         <div className="pill" style={{borderColor:'#cd7f32'}}>🥉 {res[2]?.userName}</div>
@@ -374,14 +407,14 @@ function App() {
             <section style={{padding: '0 15px'}}>
               <h2 style={styles.sectionHeader}>⚙️ DATA CONTROL</h2>
               <div style={styles.adminDataBox}>
-                <h4 style={{color:'#f0c040', marginBottom:'15px'}}>Manual Points Override</h4>
+                <h4 style={{color:'#f0c040', marginBottom:'10px'}}>Season Points</h4>
                 {leaderboard.map(u => (<div key={u.id} style={styles.adminDataRow}><span>{u.name}</span><input type="number" defaultValue={u.totalPoints} onBlur={(e) => updateSeasonPoint(u.id, e.target.value)} style={styles.dataInput} /></div>))}
               </div>
               <div style={{...styles.adminDataBox, marginTop:'20px'}}>
-                <h4 style={{color:'#f0c040', marginBottom:'15px'}}>Active Match Picks</h4>
-                {allPicks.map((p, idx) => (<div key={idx} style={styles.adminDataRow}><div><div style={{fontWeight:'bold'}}>{p.userName}</div><div style={{fontSize:'10px', color:'#7a7b98'}}>#{p.inn1Num} | #{p.inn2Num}</div></div><button onClick={() => deletePick(`${selectedMatch.id}_${p.userId}`)} style={styles.btnDelete}>DELETE</button></div>))}
+                <h4 style={{color:'#f0c040', marginBottom:'10px'}}>Active Match Picks</h4>
+                {allPicks.map((p, idx) => (<div key={idx} style={styles.adminDataRow}><span>{p.userName}</span><button onClick={() => deletePick(`${selectedMatch.id}_${p.userId}`)} style={{background:'#ff3d5a', color:'#fff', border:'none', borderRadius:'4px', padding:'4px 10px', fontSize:'10px'}}>DELETE</button></div>))}
               </div>
-              <button onClick={nuclearReset} style={styles.btnResetFull}>☢️ NUCLEAR RESET</button>
+              <button onClick={nuclearReset} style={{...styles.btnAdmin, marginTop:'30px', background:'#ff3d5a'}}>☢️ NUCLEAR RESET</button>
             </section>
           )}
         </>
@@ -396,8 +429,8 @@ const styles = {
   heroTitle: { fontSize: '48px', fontFamily: 'Bebas Neue', color: '#f0c040', marginBottom: '20px' },
   authPage: { height: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' },
   tabs: { display: 'flex', background: '#0e0f1a', borderBottom: '1px solid #252638', position: 'sticky', top: 0, zIndex: 100 },
-  tabOn: { flex: 1, padding: '15px', background: '#ff5f1f', border: 'none', color: '#fff', fontWeight: 'bold', fontSize: '11px', letterSpacing:'1px' },
-  tabOff: { flex: 1, padding: '15px', background: 'transparent', border: 'none', color: '#52536e', fontSize: '11px', letterSpacing:'1px' },
+  tabOn: { flex: 1, padding: '15px', background: '#ff5f1f', border: 'none', color: '#fff', fontWeight: 'bold', fontSize: '11px' },
+  tabOff: { flex: 1, padding: '15px', background: 'transparent', border: 'none', color: '#52536e', fontSize: '11px' },
   matchCard: { background: '#13141f', padding: '20px', borderRadius: '15px', border: '1px solid #252638', marginBottom:'12px', cursor:'pointer' },
   matchMeta: { color: '#52536e', fontSize: '10px', fontWeight: 'bold', marginBottom: '6px' },
   matchTitle: { fontSize: '18px' },
@@ -414,15 +447,13 @@ const styles = {
   adminInput: { background:'#000', color:'#fff', border:'1px solid #333', width:'70px', padding:'10px', borderRadius:'8px', textAlign:'center' },
   ticker: { flex:1, textAlign:'center', fontSize:'12px', color:'#7a7b98', fontWeight:'bold' },
   btnAction: { flex: 1, background:'#f0c040', color:'#000', padding:'12px', border:'none', borderRadius:'8px', fontWeight:'bold' },
-  btnUnlock: { width: '100%', padding: '12px', background: '#ff3d5a', color:'#fff', border: 'none', borderRadius: '8px', fontWeight: 'bold' },
+  btnAdmin: { width: '100%', padding: '12px', background: '#f0c040', border: 'none', borderRadius: '8px', fontWeight: 'bold', marginBottom: '15px' },
   btnPrimary: { background: 'linear-gradient(135deg, #ff5f1f, #d44a0f)', color: 'white', padding: '15px 45px', border: 'none', borderRadius: '100px', fontWeight: 'bold', fontSize: '14px' },
   btnNavigate: { background: '#1fd18a', color: '#000', padding: '12px 30px', border: 'none', borderRadius: '8px', fontWeight: '900', fontSize: '13px', letterSpacing:'1px', cursor: 'pointer', boxShadow: '0 4px 15px rgba(31, 209, 138, 0.3)' },
   btnResetSmall: { background:'#ff3d5a', color:'#fff', border:'none', borderRadius:'10px', padding:'0 15px', fontWeight:'bold', fontSize:'11px' },
-  btnResetFull: { width:'100%', marginTop:'30px', background:'#ff3d5a', color:'#fff', border:'none', borderRadius:'10px', padding:'15px', fontWeight:'bold' },
-  btnDelete: { background:'#ff3d5a', color:'#fff', border:'none', borderRadius:'4px', padding:'4px 10px', fontSize:'10px' },
   podiumContainer: { display: 'flex', justifyContent: 'center', alignItems: 'flex-end', gap: '12px', margin: '35px 0', height: '190px' },
   pod: { flex: 1, background: '#13141f', border: '1px solid #252638', borderRadius: '20px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' },
-  podName: { fontWeight: 'bold', fontSize: '14px', marginTop: '12px', textAlign:'center' },
+  podName: { fontWeight: 'bold', fontSize: '14px', marginTop: '12px' },
   podScore: { fontSize: '42px', color: '#f0c040', fontFamily: 'Bebas Neue' },
   tableWrap: { background: '#13141f', borderRadius: '20px', overflow: 'hidden', border: '1px solid #252638' },
   tableHeader: { display: 'flex', background: '#1a1b28', padding: '15px 12px', fontSize: '11px', color: '#7a7b98', fontWeight: 'bold' },
