@@ -63,25 +63,13 @@ function App() {
     const snap = await getDoc(doc(db, "system", "match_cache"));
     if (snap.exists()) {
       const allMatches = snap.data().list;
-      const now = new Date();
-      const todayISTStr = now.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
-
+      const todayIST = new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
       if (auth.currentUser?.email === ADMIN_EMAIL) {
-        const futureMatches = [];
-        const pastMatches = [];
-        allMatches.forEach(m => {
-          const mDate = new Date(m.dateTimeGMT.replace(' ', 'T') + 'Z');
-          if (mDate >= now) futureMatches.push(m);
-          else pastMatches.push(m);
-        });
-        const sortByDate = (a, b) => new Date(a.dateTimeGMT.replace(' ', 'T') + 'Z') - new Date(b.dateTimeGMT.replace(' ', 'T') + 'Z');
-        futureMatches.sort(sortByDate);
-        pastMatches.sort(sortByDate);
-        setMatches([...futureMatches, ...pastMatches]);
+        setMatches(allMatches);
       } else {
         setMatches(allMatches.filter(m => {
           const mDate = new Date(m.dateTimeGMT.replace(' ', 'T') + 'Z').toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
-          return mDate === todayISTStr;
+          return mDate === todayIST;
         }));
       }
     }
@@ -161,7 +149,6 @@ function App() {
             pos: i + 1, name: b.batsman?.name || b.name || "Not Played", runs: b.r || 0 
           }));
 
-          // DYNAMIC TEAM MAPPING: Store scores using actual team names as keys
           let scoresMap = {};
           sc.forEach(inningObj => {
             scoresMap[inningObj.inning.toLowerCase()] = parse(inningObj);
@@ -178,11 +165,12 @@ function App() {
   };
 
   const calculateFinalPoints = (matchObj, picksArr) => {
+    // CRITICAL: Check for scoresMap instead of old scores object
     if (!matchObj?.scoresMap || picksArr.length === 0) return [];
     
     let results = picksArr.map(p => {
-      // Find innings scores by matching saved team names
       const findScore = (teamName, pos) => {
+        if (!teamName) return null;
         const teamKey = Object.keys(matchObj.scoresMap).find(k => k.includes(teamName.toLowerCase()));
         const battingList = matchObj.scoresMap[teamKey] || [];
         return battingList.find(s => s.pos === pos);
@@ -233,10 +221,23 @@ function App() {
     window.location.reload();
   };
 
+  const nuclearReset = async () => {
+    if (user.email !== ADMIN_EMAIL) return;
+    if (!window.confirm("☢️ NUCLEAR RESET?")) return;
+    const cols = ['match_picks', 'active_matches', 'users'];
+    for (const c of cols) {
+      const snap = await getDocs(collection(db, c));
+      const batch = writeBatch(db);
+      snap.forEach(d => batch.delete(d.ref));
+      await batch.commit();
+    }
+    window.location.reload();
+  };
+
   const handleSelectMatch = async (m) => {
     const matchRef = doc(db, "active_matches", m.id);
     let snap = await getDoc(matchRef);
-    const teamNames = m.teams || [m.t1, m.t2]; // Ensure we have names
+    const teamNames = m.teams || [m.t1, m.t2];
     const data = snap.exists() ? snap.data() : { 
       inn1Deck: [1,2,3,4,5,6,7,8,9].sort(() => Math.random()-0.5), 
       inn2Deck: [1,2,3,4,5,6,7,8,9].sort(() => Math.random()-0.5),
@@ -256,13 +257,12 @@ function App() {
     if (allPicks.find(p => p.userId === effectiveUID)?.[`inn${inn}Card`] !== undefined) return;
     if (allPicks.some(p => p[`inn${inn}Card`] === idx)) return;
     
-    // ANCHOR: Store actual team name with the pick
     const assignedTeamName = inn === 1 ? selectedMatch.t1 : selectedMatch.t2;
 
     await setDoc(doc(db, "match_picks", `${selectedMatch.id}_${effectiveUID}`), { 
         userId: effectiveUID, userName: effectiveName, matchId: selectedMatch.id, 
         [`inn${inn}Card`]: idx, [`inn${inn}Num`]: matchDeck[`inn${inn}Deck`][idx],
-        [`t${inn}Name`]: assignedTeamName, // Key change: store name
+        [`t${inn}Name`]: assignedTeamName,
         timestamp: serverTimestamp() 
     }, { merge: true });
   };
@@ -271,7 +271,7 @@ function App() {
   const userHasFinished = allPicks.find(p => p.userId === effectiveID)?.inn1Card !== undefined && 
                           allPicks.find(p => p.userId === effectiveID)?.inn2Card !== undefined;
 
-  if (loading) return <div style={styles.center}>🏏 PREPARING STADIUM...</div>;
+  if (loading) return <div style={styles.center}>🏏 LOADING ARENA...</div>;
 
   return (
     <div style={styles.container}>
@@ -284,7 +284,7 @@ function App() {
       `}</style>
 
       {!user ? (
-        <div style={styles.authPage}><h1 style={styles.heroTitle}>ટ્રાફિકવાળાનો સટ્ટો</h1><button onClick={loginWithGoogle} style={styles.btnPrimary}>Login</button></div>
+        <div style={styles.authPage}><h1 style={styles.heroTitle}>ટ્રાફિકવાળાનો સટ્ટો</h1><button onClick={loginWithGoogle} style={styles.btnPrimary}>Login to Enter</button></div>
       ) : (
         <>
           <nav style={styles.tabs}>
@@ -328,7 +328,6 @@ function App() {
               )}
               <h3 style={styles.arenaTitle}>{selectedMatch.name}</h3>
               {selectedMatch.settled && <div style={styles.lockBadge}>🔒 MATCH ARCHIVED</div>}
-              
               <div style={styles.teamHeaderBox}><span style={styles.teamLabel}>TEAM GREEN</span><h4 style={{...styles.teamNameText, color:'#1fd18a'}}>{selectedMatch.t1}</h4></div>
               <div style={styles.grid}>
                 {[...Array(9)].map((_, i) => {
@@ -338,9 +337,7 @@ function App() {
                   return <div key={i} onClick={() => !p && lockCard(1, i)} style={{...styles.cardComplex, background: p ? (isMe ? '#1fd18a' : 'rgba(31,209,138,0.1)') : '#13141f', borderColor: p ? '#1fd18a' : '#252638'}}>{p ? <><div style={{...styles.cardNumber, color: isMe ? '#000' : '#1fd18a'}}>#{p.inn1Num}</div><div style={{...styles.cardFriend, color: isMe ? '#000' : '#eee'}}>{p.userName.split(' ')[0]}</div></> : (showReveal ? <span style={{color:'#f0c040', fontSize:'22px', fontFamily:'Bebas Neue'}}>#{matchDeck.inn1Deck[i]}</span> : <div style={{fontSize: '24px'}}>🏏</div>)}</div>
                 })}
               </div>
-
               {userHasFinished && <div style={{display:'flex', justifyContent:'center', margin:'30px 0'}}><button onClick={() => setTab('results')} style={styles.btnNavigate}>VIEW LIVE RESULTS →</button></div>}
-
               <div style={{...styles.teamHeaderBox, marginTop: userHasFinished ? '0' : '30px'}}><span style={styles.teamLabel}>TEAM RED</span><h4 style={{...styles.teamNameText, color:'#ff3d5a'}}>{selectedMatch.t2}</h4></div>
               <div style={styles.grid}>
                 {[...Array(9)].map((_, i) => {
@@ -369,9 +366,10 @@ function App() {
                    )}
                 </div>
               )}
+              {/* FIXED PODIUM Logic */}
               <div style={styles.podiumContainer}>
                 {calculateFinalPoints(selectedMatch, allPicks).slice(0, 3).map((r, i) => (
-                  <div key={i} style={{...styles.pod, order: i === 0 ? 2 : i === 1 ? 1 : 3, height: i === 0 ? '170px' : '140px', borderColor: i === 0 ? '#f0c040' : '#252638'}}>
+                  <div key={i} style={{...styles.pod, order: i === 0 ? 2 : i === 1 ? 1 : 3, height: i === 0 ? '160px' : '140px', borderColor: i === 0 ? '#f0c040' : '#252638'}}>
                     <div style={{fontSize:'32px'}}>{i === 0 ? '🥇' : i === 1 ? '🥈' : '🥉'}</div><div style={styles.podName}>{r.userName}</div><div style={styles.podScore}>{r.total}</div><div style={{color: r.net >= 0 ? '#1fd18a' : '#ff3d5a', fontSize: '14px', fontWeight:'bold'}}>{r.net > 0 ? '+' : ''}{r.net}</div>
                   </div>
                 ))}
@@ -379,7 +377,7 @@ function App() {
               <div style={styles.tableWrap}>
                 <div style={styles.tableHeader}><div style={styles.colF}>FRIEND</div><div style={styles.colInn}>PLAYER 1</div><div style={styles.colR}>RUNS</div><div style={styles.colInn}>PLAYER 2</div><div style={styles.colR}>RUNS</div><div style={styles.colTot}>TOTAL</div></div>
                 {calculateFinalPoints(selectedMatch, allPicks).map((p, i) => (
-                  <div key={i} style={styles.tableRow}><div style={styles.colF}>{p.userName.split(' ')[0]}</div><div style={styles.colInn}><span style={{color:'#1fd18a'}}>#{p.inn1Num}</span> <span style={styles.playerName}>{p.p1Name}</span></div><div style={styles.colR}>{p.r1}</div><div style={styles.colInn}><span style={{color:'#ff3d5a'}}>#{p.inn2Num}</span> <span style={styles.playerName}>{p.p2Name}</span></div><div style={styles.colR}>{p.r2}</div><div style={{...styles.colTot, color:'#f0c040'}}>{p.total}</div></div>
+                  <div key={i} style={styles.tableRow}><div style={styles.colF}>{p.userName.split(' ')[0]}</div><div style={styles.colInn}><span style={{color:'#1fd18a', fontWeight:'bold'}}>#{p.inn1Num}</span> <span style={styles.playerName}>{p.p1Name}</span></div><div style={styles.colR}>{p.r1}</div><div style={styles.colInn}><span style={{color:'#ff3d5a', fontWeight:'bold'}}>#{p.inn2Num}</span> <span style={styles.playerName}>{p.p2Name}</span></div><div style={styles.colR}>{p.r2}</div><div style={{...styles.colTot, color:'#f0c040'}}>{p.total}</div></div>
                 ))}
               </div>
             </section>
@@ -387,23 +385,33 @@ function App() {
 
           {tab === 'season' && (
             <section style={{padding: '0 15px'}}>
-              <h2 style={styles.sectionHeader}>🏆 STANDINGS</h2>
-              <div style={styles.tableWrap}>{leaderboard.map((u, i) => (<div key={i} style={styles.tableRow}><div style={{flex:1, color:'#52536e'}}>0{i+1}</div><div style={{flex:3, fontWeight:'bold'}}>{u.name}</div><div style={{flex:2, textAlign:'right', color: u.totalPoints >= 0 ? '#1fd18a' : '#ff3d5a', fontSize:'22px', fontFamily:'Bebas Neue'}}>{u.totalPoints > 0 ? '+' : ''}{u.totalPoints}</div></div>))}</div>
-              <h2 style={{...styles.sectionHeader, marginTop:'40px'}}>📋 HISTORY</h2>
+              <h2 style={styles.sectionHeader}>🏆 SEASON STANDINGS</h2>
+              <div style={{...styles.tableWrap, marginBottom:'40px', background:'#0e0f1a'}}>
+                 {leaderboard.map((u, i) => (
+                   <div key={i} style={styles.tableRow}><div style={{flex:1, color:'#52536e'}}>0{i+1}</div><div style={{flex:3, fontWeight:'bold', color: i === 0 ? '#f0c040' : '#eee'}}>{u.name}</div><div style={{flex:2, textAlign:'right', color: u.totalPoints >= 0 ? '#1fd18a' : '#ff3d5a', fontSize:'22px', fontFamily:'Bebas Neue'}}>{u.totalPoints > 0 ? '+' : ''}{u.totalPoints}</div></div>
+                 ))}
+              </div>
+              <h2 style={styles.sectionHeader}>📋 MATCH HISTORY</h2>
               {matchHistory.map((m, i) => {
                 const res = calculateFinalPoints(m, m.allPicks);
-                return (<div key={i} className="match-history-card" onClick={() => { setSelectedMatch(m); setTab('results'); }}><div style={{display:'flex', justifyContent:'space-between', marginBottom:'12px', borderBottom:'1px solid #252638', paddingBottom:'8px'}}><span style={{fontWeight:'bold'}}>🏏 {m.matchName}</span><span style={{fontSize:'11px', color:'#7a7b98'}}>{m.dateText} • Pull: {m.finalPull}</span></div><div style={{display:'flex', gap:'8px', marginBottom:'12px'}}><div className="pill" style={{borderColor:'#f0c040'}}>🥇 {res[0]?.userName}</div><div className="pill" style={{borderColor:'#c0c0c0'}}>🥈 {res[1]?.userName}</div><div className="pill" style={{borderColor:'#cd7f32'}}>🥉 {res[2]?.userName}</div></div><div style={{display:'flex', flexWrap:'wrap', gap:'10px', fontSize:'11px', color:'#52536e'}}>{res.map((p, idx) => (<span key={idx}>{p.userName}: <span style={{color: p.net > 0 ? '#1fd18a' : p.net === 0 ? '#eee' : '#ff3d5a'}}>{p.net > 0 ? '+' : ''}{p.net}</span>{idx < res.length - 1 ? ' •' : ''}</span>))}</div></div>);
+                return (<div key={i} className="match-history-card" onClick={() => { setSelectedMatch(m); setTab('results'); }}><div style={{display:'flex', justifyContent:'space-between', marginBottom:'12px', borderBottom:'1px solid #252638', paddingBottom:'8px'}}><span style={{fontWeight:'bold'}}>🏏 {m.matchName}</span><span style={{fontSize:'11px', color:'#7a7b98'}}>{m.dateText} • Pull: {m.finalPull}</span></div><div style={{display:'flex', gap:'8px', marginBottom:'12px'}}>
+                        <div className="pill" style={{borderColor:'#f0c040'}}>🥇 {res[0]?.userName}</div>
+                        <div className="pill" style={{borderColor:'#c0c0c0'}}>🥈 {res[1]?.userName}</div>
+                        <div className="pill" style={{borderColor:'#cd7f32'}}>🥉 {res[2]?.userName}</div>
+                    </div><div style={{display:'flex', flexWrap:'wrap', gap:'10px', fontSize:'11px', color:'#52536e'}}>{res.map((p, idx) => (<span key={idx}>{p.userName}: <span style={{color: p.net > 0 ? '#1fd18a' : p.net === 0 ? '#eee' : '#ff3d5a'}}>{p.net > 0 ? '+' : ''}{p.net}</span>{idx < res.length - 1 ? ' •' : ''}</span>))}</div></div>);
               })}
             </section>
           )}
 
           {tab === 'data' && user.email === ADMIN_EMAIL && (
             <section style={{padding: '0 15px'}}>
-              <h2 style={styles.sectionHeader}>⚙️ DATA</h2>
+              <h2 style={styles.sectionHeader}>⚙️ DATA CONTROL</h2>
               <div style={styles.adminDataBox}>
+                <h4 style={{color:'#f0c040', marginBottom:'10px'}}>Season Points</h4>
                 {leaderboard.map(u => (<div key={u.id} style={styles.adminDataRow}><span>{u.name}</span><input type="number" defaultValue={u.totalPoints} onBlur={(e) => updateSeasonPoint(u.id, e.target.value)} style={styles.dataInput} /></div>))}
               </div>
               <div style={{...styles.adminDataBox, marginTop:'20px'}}>
+                <h4 style={{color:'#f0c040', marginBottom:'10px'}}>Active Match Picks</h4>
                 {allPicks.map((p, idx) => (<div key={idx} style={styles.adminDataRow}><span>{p.userName}</span><button onClick={() => deletePick(`${selectedMatch.id}_${p.userId}`)} style={{background:'#ff3d5a', color:'#fff', border:'none', borderRadius:'4px', padding:'4px 10px', fontSize:'10px'}}>DELETE</button></div>))}
               </div>
               <button onClick={nuclearReset} style={{...styles.btnAdmin, marginTop:'30px', background:'#ff3d5a'}}>☢️ NUCLEAR RESET</button>
