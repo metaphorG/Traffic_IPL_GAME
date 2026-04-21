@@ -47,10 +47,8 @@ function App() {
       try {
         const res = await fetch(`https://api.cricapi.com/v1/metadata?apikey=${key}`);
         const data = await res.json();
-        if (data.status === 'success') {
-          sum += (data.data.hitsLimit - data.data.hitsUsed);
-        }
-      } catch (e) { console.error("Ticker fetch fail"); }
+        if (data.status === 'success') sum += (data.data.hitsLimit - data.data.hitsUsed);
+      } catch (e) { console.error("Key error"); }
     }
     setTotalCredits(sum);
   };
@@ -111,18 +109,17 @@ function App() {
   };
 
   const deletePick = async (pickId) => {
-    if (window.confirm("Delete this pick?")) await deleteDoc(doc(db, "match_picks", pickId));
+    if (window.confirm("Delete pick?")) await deleteDoc(doc(db, "match_picks", pickId));
   };
 
   const resetCurrentMatch = async () => {
     if (!selectedMatch || user.email !== ADMIN_EMAIL) return;
-    if (!window.confirm("Clear all picks for this match?")) return;
+    if (!window.confirm("Clear picks?")) return;
     const batch = writeBatch(db);
     const q = query(collection(db, "match_picks"), where("matchId", "==", selectedMatch.id));
     const snap = await getDocs(q);
     snap.forEach(d => batch.delete(d.ref));
     await batch.commit();
-    alert("Match Selections Cleared");
   };
 
   const toggleArchive = async () => {
@@ -145,7 +142,7 @@ function App() {
           await setDoc(doc(db, "system", "match_cache"), { list, updatedAt: serverTimestamp() });
           loadMatchCache();
           fetchTotalCredits();
-          alert("Fixtures Synced");
+          alert("Synced");
           return; 
         }
       } catch (e) { console.error(e); }
@@ -164,19 +161,16 @@ function App() {
             pos: i + 1, name: b.batsman?.name || b.name || "Not Played", runs: b.r || 0 
           }));
 
-          // FIX: Preserve team mapping regardless of who bats first
-          let scores = { inn1: [], inn2: [], updatedAt: new Date() };
-          sc.forEach(obj => {
-            if (obj.inning.includes(selectedMatch.t1)) scores.inn1 = parse(obj);
-            else if (obj.inning.includes(selectedMatch.t2)) scores.inn2 = parse(obj);
+          // DYNAMIC TEAM MAPPING: Store scores using actual team names as keys
+          let scoresMap = {};
+          sc.forEach(inningObj => {
+            scoresMap[inningObj.inning.toLowerCase()] = parse(inningObj);
           });
-          if (scores.inn1.length === 0) scores.inn1 = parse(sc[0]);
-          if (scores.inn2.length === 0) scores.inn2 = parse(sc[1]);
 
-          await setDoc(doc(db, "active_matches", selectedMatch.id), { scores }, { merge: true });
-          setSelectedMatch({ ...selectedMatch, scores });
+          await setDoc(doc(db, "active_matches", selectedMatch.id), { scoresMap }, { merge: true });
+          setSelectedMatch({ ...selectedMatch, scoresMap });
           fetchTotalCredits();
-          alert("Score Updated");
+          alert("Scorecard Fetched");
           return;
         }
       } catch (e) { console.error(e); }
@@ -184,12 +178,29 @@ function App() {
   };
 
   const calculateFinalPoints = (matchObj, picksArr) => {
-    if (!matchObj?.scores || picksArr.length === 0) return [];
+    if (!matchObj?.scoresMap || picksArr.length === 0) return [];
+    
     let results = picksArr.map(p => {
-      const s1 = matchObj.scores.inn1.find(s => s.pos === p.inn1Num);
-      const s2 = matchObj.scores.inn2.find(s => s.pos === p.inn2Num);
-      return { ...p, p1Name: s1?.name || "TBD", p2Name: s2?.name || "TBD", r1: s1?.runs || 0, r2: s2?.runs || 0, total: (s1?.runs || 0) + (s2?.runs || 0) };
+      // Find innings scores by matching saved team names
+      const findScore = (teamName, pos) => {
+        const teamKey = Object.keys(matchObj.scoresMap).find(k => k.includes(teamName.toLowerCase()));
+        const battingList = matchObj.scoresMap[teamKey] || [];
+        return battingList.find(s => s.pos === pos);
+      };
+
+      const s1 = findScore(p.t1Name, p.inn1Num);
+      const s2 = findScore(p.t2Name, p.inn2Num);
+
+      return { 
+        ...p, 
+        p1Name: s1?.name || "TBD", 
+        p2Name: s2?.name || "TBD", 
+        r1: s1?.runs || 0, 
+        r2: s2?.runs || 0, 
+        total: (s1?.runs || 0) + (s2?.runs || 0) 
+      };
     }).sort((a,b) => b.total - a.total);
+
     const pullUsed = matchObj.finalPull || adminPull;
     const remPot = (picksArr.length * pullUsed) - pullUsed; 
     let rank = 0;
@@ -215,33 +226,21 @@ function App() {
 
   const submitToSeason = async () => {
     const res = calculateFinalPoints(selectedMatch, allPicks);
-    if (user.email !== ADMIN_EMAIL || !selectedMatch?.scores || selectedMatch?.settled) return;
-    if (!window.confirm(`Submit results?`)) return;
+    if (user.email !== ADMIN_EMAIL || !selectedMatch?.scoresMap || selectedMatch?.settled) return;
+    if (!window.confirm(`Finalize results?`)) return;
     for (let r of res) await setDoc(doc(db, "users", r.userId), { name: r.userName, totalPoints: increment(r.net) }, { merge: true });
     await setDoc(doc(db, "active_matches", selectedMatch.id), { settled: true, finalPull: adminPull, matchName: selectedMatch.name, dateText: formatIST(selectedMatch.dateTimeGMT), updatedAt: new Date() }, { merge: true });
-    window.location.reload();
-  };
-
-  const nuclearReset = async () => {
-    if (user.email !== ADMIN_EMAIL) return;
-    if (!window.confirm("☢️ ERASE ALL?")) return;
-    const cols = ['match_picks', 'active_matches', 'users'];
-    for (const c of cols) {
-      const snap = await getDocs(collection(db, c));
-      const batch = writeBatch(db);
-      snap.forEach(d => batch.delete(d.ref));
-      await batch.commit();
-    }
     window.location.reload();
   };
 
   const handleSelectMatch = async (m) => {
     const matchRef = doc(db, "active_matches", m.id);
     let snap = await getDoc(matchRef);
+    const teamNames = m.teams || [m.t1, m.t2]; // Ensure we have names
     const data = snap.exists() ? snap.data() : { 
       inn1Deck: [1,2,3,4,5,6,7,8,9].sort(() => Math.random()-0.5), 
       inn2Deck: [1,2,3,4,5,6,7,8,9].sort(() => Math.random()-0.5),
-      t1: m.teams?.[0] || "Team 1", t2: m.teams?.[1] || "Team 2"
+      t1: teamNames[0], t2: teamNames[1]
     };
     if (!snap.exists()) await setDoc(matchRef, data);
     setMatchDeck(data);
@@ -256,14 +255,23 @@ function App() {
     const effectiveName = adminIdentity.name || user.displayName;
     if (allPicks.find(p => p.userId === effectiveUID)?.[`inn${inn}Card`] !== undefined) return;
     if (allPicks.some(p => p[`inn${inn}Card`] === idx)) return;
-    await setDoc(doc(db, "match_picks", `${selectedMatch.id}_${effectiveUID}`), { userId: effectiveUID, userName: effectiveName, matchId: selectedMatch.id, [`inn${inn}Card`]: idx, [`inn${inn}Num`]: matchDeck[`inn${inn}Deck`][idx], timestamp: serverTimestamp() }, { merge: true });
+    
+    // ANCHOR: Store actual team name with the pick
+    const assignedTeamName = inn === 1 ? selectedMatch.t1 : selectedMatch.t2;
+
+    await setDoc(doc(db, "match_picks", `${selectedMatch.id}_${effectiveUID}`), { 
+        userId: effectiveUID, userName: effectiveName, matchId: selectedMatch.id, 
+        [`inn${inn}Card`]: idx, [`inn${inn}Num`]: matchDeck[`inn${inn}Deck`][idx],
+        [`t${inn}Name`]: assignedTeamName, // Key change: store name
+        timestamp: serverTimestamp() 
+    }, { merge: true });
   };
 
   const effectiveID = adminIdentity.id || user?.uid;
   const userHasFinished = allPicks.find(p => p.userId === effectiveID)?.inn1Card !== undefined && 
                           allPicks.find(p => p.userId === effectiveID)?.inn2Card !== undefined;
 
-  if (loading) return <div style={styles.center}>🏏 ARENA LOADING...</div>;
+  if (loading) return <div style={styles.center}>🏏 PREPARING STADIUM...</div>;
 
   return (
     <div style={styles.container}>
@@ -276,7 +284,7 @@ function App() {
       `}</style>
 
       {!user ? (
-        <div style={styles.authPage}><h1 style={styles.heroTitle}>ટ્રાફિકવાળાનો સટ્ટો</h1><button onClick={loginWithGoogle} style={styles.btnPrimary}>Login to Enter</button></div>
+        <div style={styles.authPage}><h1 style={styles.heroTitle}>ટ્રાફિકવાળાનો સટ્ટો</h1><button onClick={loginWithGoogle} style={styles.btnPrimary}>Login</button></div>
       ) : (
         <>
           <nav style={styles.tabs}>
@@ -289,13 +297,12 @@ function App() {
           {tab === 'matches' && (
             <section style={{padding: '0 15px'}}>
               {user.email === ADMIN_EMAIL && <button onClick={adminFetchMatches} style={styles.btnAdmin}>ADMIN: SYNC FIXTURES</button>}
-              {matches.length === 0 ? <div style={{textAlign:'center', marginTop:'50px', color:'#52536e'}}>No matches scheduled today.</div> : 
-                matches.map(m => {
+              {matches.map(m => {
                   const todayStr = new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
                   const matchStr = new Date(m.dateTimeGMT.replace(' ', 'T') + 'Z').toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
                   const isToday = todayStr === matchStr;
                   return (
-                    <div key={m.id} onClick={() => handleSelectMatch(m)} style={{...styles.matchCard, border: isToday ? '1px solid #1fd18a' : '1px solid #252638', boxShadow: isToday ? '0 0 15px rgba(31,209,138,0.1)' : 'none'}}>
+                    <div key={m.id} onClick={() => handleSelectMatch(m)} style={{...styles.matchCard, border: isToday ? '1px solid #1fd18a' : '1px solid #252638'}}>
                       <div style={styles.matchMeta}>{isToday ? '🔥 PLAYING TODAY' : 'UPCOMING / PAST'}</div>
                       <b style={styles.matchTitle}>{m.name}</b>
                       <div style={styles.matchTime}>{formatIST(m.dateTimeGMT)}</div>
@@ -316,11 +323,12 @@ function App() {
                       {leaderboard.map(u => <option key={u.id} value={`${u.id}|${u.name}`}>{u.name}</option>)}
                     </select>
                   </div>
-                  <button onClick={resetCurrentMatch} style={styles.btnResetSmall}>RESET MATCH</button>
+                  <button onClick={resetCurrentMatch} style={styles.btnResetSmall}>RESET</button>
                 </div>
               )}
               <h3 style={styles.arenaTitle}>{selectedMatch.name}</h3>
               {selectedMatch.settled && <div style={styles.lockBadge}>🔒 MATCH ARCHIVED</div>}
+              
               <div style={styles.teamHeaderBox}><span style={styles.teamLabel}>TEAM GREEN</span><h4 style={{...styles.teamNameText, color:'#1fd18a'}}>{selectedMatch.t1}</h4></div>
               <div style={styles.grid}>
                 {[...Array(9)].map((_, i) => {
@@ -330,7 +338,9 @@ function App() {
                   return <div key={i} onClick={() => !p && lockCard(1, i)} style={{...styles.cardComplex, background: p ? (isMe ? '#1fd18a' : 'rgba(31,209,138,0.1)') : '#13141f', borderColor: p ? '#1fd18a' : '#252638'}}>{p ? <><div style={{...styles.cardNumber, color: isMe ? '#000' : '#1fd18a'}}>#{p.inn1Num}</div><div style={{...styles.cardFriend, color: isMe ? '#000' : '#eee'}}>{p.userName.split(' ')[0]}</div></> : (showReveal ? <span style={{color:'#f0c040', fontSize:'22px', fontFamily:'Bebas Neue'}}>#{matchDeck.inn1Deck[i]}</span> : <div style={{fontSize: '24px'}}>🏏</div>)}</div>
                 })}
               </div>
+
               {userHasFinished && <div style={{display:'flex', justifyContent:'center', margin:'30px 0'}}><button onClick={() => setTab('results')} style={styles.btnNavigate}>VIEW LIVE RESULTS →</button></div>}
+
               <div style={{...styles.teamHeaderBox, marginTop: userHasFinished ? '0' : '30px'}}><span style={styles.teamLabel}>TEAM RED</span><h4 style={{...styles.teamNameText, color:'#ff3d5a'}}>{selectedMatch.t2}</h4></div>
               <div style={styles.grid}>
                 {[...Array(9)].map((_, i) => {
@@ -369,7 +379,7 @@ function App() {
               <div style={styles.tableWrap}>
                 <div style={styles.tableHeader}><div style={styles.colF}>FRIEND</div><div style={styles.colInn}>PLAYER 1</div><div style={styles.colR}>RUNS</div><div style={styles.colInn}>PLAYER 2</div><div style={styles.colR}>RUNS</div><div style={styles.colTot}>TOTAL</div></div>
                 {calculateFinalPoints(selectedMatch, allPicks).map((p, i) => (
-                  <div key={i} style={styles.tableRow}><div style={styles.colF}>{p.userName.split(' ')[0]}</div><div style={styles.colInn}><span style={{color:'#1fd18a', fontWeight:'bold'}}>#{p.inn1Num}</span> <span style={styles.playerName}>{p.p1Name}</span></div><div style={styles.colR}>{p.r1}</div><div style={styles.colInn}><span style={{color:'#ff3d5a', fontWeight:'bold'}}>#{p.inn2Num}</span> <span style={styles.playerName}>{p.p2Name}</span></div><div style={styles.colR}>{p.r2}</div><div style={{...styles.colTot, color:'#f0c040'}}>{p.total}</div></div>
+                  <div key={i} style={styles.tableRow}><div style={styles.colF}>{p.userName.split(' ')[0]}</div><div style={styles.colInn}><span style={{color:'#1fd18a'}}>#{p.inn1Num}</span> <span style={styles.playerName}>{p.p1Name}</span></div><div style={styles.colR}>{p.r1}</div><div style={styles.colInn}><span style={{color:'#ff3d5a'}}>#{p.inn2Num}</span> <span style={styles.playerName}>{p.p2Name}</span></div><div style={styles.colR}>{p.r2}</div><div style={{...styles.colTot, color:'#f0c040'}}>{p.total}</div></div>
                 ))}
               </div>
             </section>
@@ -377,13 +387,9 @@ function App() {
 
           {tab === 'season' && (
             <section style={{padding: '0 15px'}}>
-              <h2 style={styles.sectionHeader}>🏆 SEASON STANDINGS</h2>
-              <div style={{...styles.tableWrap, marginBottom:'40px', background:'#0e0f1a'}}>
-                 {leaderboard.map((u, i) => (
-                   <div key={i} style={styles.tableRow}><div style={{flex:1, color:'#52536e'}}>0{i+1}</div><div style={{flex:3, fontWeight:'bold', color: i === 0 ? '#f0c040' : '#eee'}}>{u.name}</div><div style={{flex:2, textAlign:'right', color: u.totalPoints >= 0 ? '#1fd18a' : '#ff3d5a', fontSize:'22px', fontFamily:'Bebas Neue'}}>{u.totalPoints > 0 ? '+' : ''}{u.totalPoints}</div></div>
-                 ))}
-              </div>
-              <h2 style={styles.sectionHeader}>📋 MATCH HISTORY</h2>
+              <h2 style={styles.sectionHeader}>🏆 STANDINGS</h2>
+              <div style={styles.tableWrap}>{leaderboard.map((u, i) => (<div key={i} style={styles.tableRow}><div style={{flex:1, color:'#52536e'}}>0{i+1}</div><div style={{flex:3, fontWeight:'bold'}}>{u.name}</div><div style={{flex:2, textAlign:'right', color: u.totalPoints >= 0 ? '#1fd18a' : '#ff3d5a', fontSize:'22px', fontFamily:'Bebas Neue'}}>{u.totalPoints > 0 ? '+' : ''}{u.totalPoints}</div></div>))}</div>
+              <h2 style={{...styles.sectionHeader, marginTop:'40px'}}>📋 HISTORY</h2>
               {matchHistory.map((m, i) => {
                 const res = calculateFinalPoints(m, m.allPicks);
                 return (<div key={i} className="match-history-card" onClick={() => { setSelectedMatch(m); setTab('results'); }}><div style={{display:'flex', justifyContent:'space-between', marginBottom:'12px', borderBottom:'1px solid #252638', paddingBottom:'8px'}}><span style={{fontWeight:'bold'}}>🏏 {m.matchName}</span><span style={{fontSize:'11px', color:'#7a7b98'}}>{m.dateText} • Pull: {m.finalPull}</span></div><div style={{display:'flex', gap:'8px', marginBottom:'12px'}}><div className="pill" style={{borderColor:'#f0c040'}}>🥇 {res[0]?.userName}</div><div className="pill" style={{borderColor:'#c0c0c0'}}>🥈 {res[1]?.userName}</div><div className="pill" style={{borderColor:'#cd7f32'}}>🥉 {res[2]?.userName}</div></div><div style={{display:'flex', flexWrap:'wrap', gap:'10px', fontSize:'11px', color:'#52536e'}}>{res.map((p, idx) => (<span key={idx}>{p.userName}: <span style={{color: p.net > 0 ? '#1fd18a' : p.net === 0 ? '#eee' : '#ff3d5a'}}>{p.net > 0 ? '+' : ''}{p.net}</span>{idx < res.length - 1 ? ' •' : ''}</span>))}</div></div>);
@@ -393,16 +399,14 @@ function App() {
 
           {tab === 'data' && user.email === ADMIN_EMAIL && (
             <section style={{padding: '0 15px'}}>
-              <h2 style={styles.sectionHeader}>⚙️ DATA CONTROL</h2>
+              <h2 style={styles.sectionHeader}>⚙️ DATA</h2>
               <div style={styles.adminDataBox}>
-                <h4 style={{color:'#f0c040', marginBottom:'10px'}}>Season Points</h4>
                 {leaderboard.map(u => (<div key={u.id} style={styles.adminDataRow}><span>{u.name}</span><input type="number" defaultValue={u.totalPoints} onBlur={(e) => updateSeasonPoint(u.id, e.target.value)} style={styles.dataInput} /></div>))}
               </div>
               <div style={{...styles.adminDataBox, marginTop:'20px'}}>
-                <h4 style={{color:'#f0c040', marginBottom:'10px'}}>Active Match Picks</h4>
                 {allPicks.map((p, idx) => (<div key={idx} style={styles.adminDataRow}><span>{p.userName}</span><button onClick={() => deletePick(`${selectedMatch.id}_${p.userId}`)} style={{background:'#ff3d5a', color:'#fff', border:'none', borderRadius:'4px', padding:'4px 10px', fontSize:'10px'}}>DELETE</button></div>))}
               </div>
-              <button onClick={nuclearReset} style={{...styles.btnAdmin, marginTop:'30px', background:'#ff3d5a'}}>☢️ NUCLEAR RESET SEASON</button>
+              <button onClick={nuclearReset} style={{...styles.btnAdmin, marginTop:'30px', background:'#ff3d5a'}}>☢️ NUCLEAR RESET</button>
             </section>
           )}
         </>
@@ -417,8 +421,8 @@ const styles = {
   heroTitle: { fontSize: '48px', fontFamily: 'Bebas Neue', color: '#f0c040', marginBottom: '20px' },
   authPage: { height: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' },
   tabs: { display: 'flex', background: '#0e0f1a', borderBottom: '1px solid #252638', position: 'sticky', top: 0, zIndex: 100 },
-  tabOn: { flex: 1, padding: '15px', background: '#ff5f1f', border: 'none', color: '#fff', fontWeight: 'bold', fontSize: '11px', letterSpacing:'1px' },
-  tabOff: { flex: 1, padding: '15px', background: 'transparent', border: 'none', color: '#52536e', fontSize: '11px', letterSpacing:'1px' },
+  tabOn: { flex: 1, padding: '15px', background: '#ff5f1f', border: 'none', color: '#fff', fontWeight: 'bold', fontSize: '11px' },
+  tabOff: { flex: 1, padding: '15px', background: 'transparent', border: 'none', color: '#52536e', fontSize: '11px' },
   matchCard: { background: '#13141f', padding: '20px', borderRadius: '15px', border: '1px solid #252638', marginBottom:'12px', cursor:'pointer' },
   matchMeta: { color: '#52536e', fontSize: '10px', fontWeight: 'bold', marginBottom: '6px' },
   matchTitle: { fontSize: '18px' },
